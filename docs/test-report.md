@@ -6,7 +6,7 @@ Status: v0.1 acceptance record. Every claim below carries its evidence level. An
 
 - macOS (darwin), Node.js `v26.13.0`, npm `11.20.0`, Git `2.56.0`.
 - DSH `0.2.2-rc.1` installed package; Agent Teams preset "标准研发团队-diy" (lead + advisor + executor + reviewer).
-- Repository under test: this checkout, all files new (no clean-checkout claim; see §9-1 of the review).
+- Clean-checkout verification: a fresh `git clone` of the v0.1 commit produced **59/59 tests passing, `validate` 0 errors / 0 warnings**, and a clean working tree afterwards (`git status --short` empty).
 
 ## Evidence levels
 
