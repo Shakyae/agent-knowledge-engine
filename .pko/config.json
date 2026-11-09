@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "knowledgeRoots": {
+    "note": ".agents/notes",
+    "defensive-pattern": "docs/defensive-patterns",
+    "postmortem": "docs/postmortem",
+    "cookbook": "docs/cookbook"
+  },
+  "candidatesDir": ".pko/candidates",
+  "publishLog": ".pko/publish-log.jsonl"
+}

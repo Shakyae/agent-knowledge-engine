@@ -1,0 +1,5 @@
+export function validationReport(diagnostics){const errors=diagnostics.filter(x=>x.severity==='error').length,warnings=diagnostics.filter(x=>x.severity==='warning').length;return{diagnostics,errors,warnings}}
+export function printValidation(diagnostics,json=false){const result=validationReport(diagnostics);if(json)console.log(JSON.stringify(result,null,2));else{for(const d of diagnostics)console.log(`${d.path}:${d.line} — ${d.severity} — ${d.message}`);console.log(`${result.errors} errors, ${result.warnings} warnings`)}return result}
+export function printResult(value,json=false){if(json){console.log(JSON.stringify(value,null,2));return}if(Array.isArray(value)){printValidation(value);return}if(typeof value==='string'){console.log(value);return}console.log(JSON.stringify(value,null,2))}
+export function printSuccess(summary,json=false,data){if(json)console.log(JSON.stringify({ok:true,summary,...(data===undefined?{}:{data}),errors:0,warnings:0},null,2));else console.log(summary)}
+export function printFailure(message,json=false){if(json)console.log(JSON.stringify({ok:false,error:message,errors:1,warnings:0},null,2));else console.error(message)}

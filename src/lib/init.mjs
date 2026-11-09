@@ -1,0 +1,29 @@
+import path from 'node:path';
+import { access, lstat, mkdir, readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { atomicWrite } from './fsx.mjs';
+import { defaultConfig } from './config.mjs';
+
+const directories=['.agents/notes/proposed','.agents/notes/implemented','.agents/notes/rejected','docs/defensive-patterns','docs/postmortem','docs/cookbook','.pko/candidates','.pko/tools/scripts','.pko/tools/src/lib'];
+const indexes={'notes/README.md':'.agents/notes/README.md','defensive-patterns/README.md':'docs/defensive-patterns/README.md','postmortem/README.md':'docs/postmortem/README.md','cookbook/README.md':'docs/cookbook/README.md'};
+const begin='<!-- pko:begin -->',end='<!-- pko:end -->';
+function marked(template){const m=template.match(/<!-- pko:begin -->[\s\S]*?<!-- pko:end -->/);if(!m)throw Error('AGENTS template lacks marker block');return m[0]+'\n'}
+async function exists(p){try{return await lstat(p)}catch(e){if(e.code==='ENOENT')return null;throw e}}
+async function validateTarget(root,target){const resolved=path.resolve(root,target);if(!resolved.startsWith(root+path.sep)&&resolved!==root)throw Error(`unsafe path outside project: ${target}`);let cursor=resolved;while(cursor!==root){const info=await exists(cursor);if(info?.isSymbolicLink()){const real=await realpath(cursor);if(real!==root&&!real.startsWith(root+path.sep))throw Error(`unsafe symlink path: ${target}`)}cursor=path.dirname(cursor)}return resolved}
+export async function initProject(dir,{dryRun=false,mergeAgents=false,source=process.cwd()}={}){
+ const root=path.resolve(dir),git=spawnSync('git',['-C',root,'rev-parse','--is-inside-work-tree'],{encoding:'utf8'});if(git.status!==0||git.stdout.trim()!=='true')throw Error(`${root} is not a valid Git work tree`);
+ const plan=[],conflicts=[];const add=(status,p,reason,from)=>{const item={status,path:p,...(reason?{reason}:{}),...(from?{source:from}:{})};plan.push(item);if(status==='conflict')conflicts.push(item);return item};
+ async function planDir(rel){let target;try{target=await validateTarget(root,rel)}catch(e){add('conflict',rel,e.message);return}const info=await exists(target);if(info){if(info.isDirectory())add('skip',rel,'directory already exists');else add('conflict',rel,'expected directory');}else add('created',rel)}
+ async function planFile(rel,from,data){let target;try{target=await validateTarget(root,rel)}catch(e){add('conflict',rel,e.message,from);return}let old;try{old=await readFile(target)}catch(e){if(e.code!=='ENOENT'){add('conflict',rel,`cannot read target: ${e.message}`,from);return}old=null}if(old){const info=await stat(target).catch(()=>null);if(!info?.isFile()){add('conflict',rel,'expected file',from);return}add(old.equals(data)?'identical':'conflict',rel,old.equals(data)?undefined:'different content; not overwritten',from)}else add('created',rel,undefined,from)}
+ const templateRoot=path.join(source,'templates/project'),skillSource=path.join(source,'skills/knowledge-ops/SKILL.md');
+ for(const d of directories)await planDir(d);
+ for(const [from,to] of Object.entries(indexes))await planFile(to,path.join(templateRoot,from),await readFile(path.join(templateRoot,from)));
+ await planFile('.agents/skills/knowledge-ops/SKILL.md',skillSource,await readFile(skillSource));
+ const config=Buffer.from(JSON.stringify(defaultConfig,null,2)+'\n');await planFile('.pko/config.json','generated from config defaults',config);
+ const agentsTemplate=await readFile(path.join(templateRoot,'AGENTS.md'),'utf8'),block=marked(agentsTemplate);let agentTarget;try{agentTarget=await validateTarget(root,'AGENTS.md')}catch(e){add('conflict','AGENTS.md',e.message);agentTarget=null}const a=agentTarget?await exists(agentTarget):null;
+ if(agentTarget&&!a)add('created','AGENTS.md',undefined,path.join(templateRoot,'AGENTS.md'));
+ else if(agentTarget){let current;try{current=await readFile(agentTarget,'utf8')}catch(e){add('conflict','AGENTS.md',`cannot read: ${e.message}`)}if(current!==undefined){const starts=[...current.matchAll(/<!-- pko:begin -->/g)],ends=[...current.matchAll(/<!-- pko:end -->/g)];if(starts.length===0&&ends.length===0){if(mergeAgents)add('created','AGENTS.md','append PKO marker block',path.join(templateRoot,'AGENTS.md'));else add('skip','AGENTS.md','existing unmarked instructions preserved');await planFile('.pko/AGENTS-fragment.md','templates/project/AGENTS.md',Buffer.from(block))}else if(starts.length===1&&ends.length===1&&starts[0].index<ends[0].index){const existing=current.slice(starts[0].index,ends[0].index+end.length);add(existing===block.trimEnd()?'identical':'conflict','AGENTS.md',existing===block.trimEnd()?undefined:'different PKO marker block')}else add('conflict','AGENTS.md','malformed, unpaired, or duplicate markers')}}
+ const tools=[['scripts/kno.mjs','.pko/tools/scripts/kno.mjs']];for(const f of await readdir(path.join(source,'src/lib')))if(f.endsWith('.mjs'))tools.push([`src/lib/${f}`,`.pko/tools/src/lib/${f}`]);for(const [from,to] of tools)await planFile(to,from,await readFile(path.join(source,from)));
+ if(!dryRun){for(const item of plan){if(item.status!=='created')continue;const target=await validateTarget(root,item.path);if(item.path==='AGENTS.md'&&item.reason==='append PKO marker block'){const original=await readFile(target,'utf8');await atomicWrite(target,original+(original.endsWith('\n')?'':'\n')+'\n'+block);continue}if(item.path==='.pko/AGENTS-fragment.md'){await atomicWrite(target,block);continue}if(directories.includes(item.path)){await mkdir(target,{recursive:true});continue}let bytes;if(item.path==='.pko/config.json')bytes=config;else if(item.path.startsWith('.pko/tools/'))bytes=await readFile(path.join(source,item.source));else bytes=await readFile(item.source);await atomicWrite(target,bytes)}}
+ return {plan,conflicts,projectRoot:root};
+}

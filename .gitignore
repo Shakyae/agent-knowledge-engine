@@ -1,0 +1,6 @@
+node_modules/
+.pko-tmp/
+tests/.work/
+*.log
+.DS_Store
+coverage/

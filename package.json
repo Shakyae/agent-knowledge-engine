@@ -1,0 +1,25 @@
+{
+  "name": "agent-knowledge-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project-level engineering knowledge ops for coding agents: retrieve, capture, review and publish with Markdown, Git and a dependency-free Node CLI.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "kno": "./scripts/kno.mjs"
+  },
+  "scripts": {
+    "test": "node --test tests/unit tests/integration",
+    "check": "npm test && node scripts/kno.mjs validate --project .",
+    "kno": "node scripts/kno.mjs"
+  },
+  "files": [
+    "scripts",
+    "src",
+    "skills",
+    "templates"
+  ]
+}
