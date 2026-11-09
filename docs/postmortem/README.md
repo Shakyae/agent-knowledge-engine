@@ -6,4 +6,4 @@ Write one only when the defect was **subtle**, **systemic** (the escape was a ga
 
 Required sections: `## Executive summary`, `## Summary`, `## Impact`, `## Timeline`, `## Root cause […]`, `## Guardrails […]`; the header is `# Post-mortem NNNN: <title>` followed by a free-form `Status:` line. Link the guardrails that now prevent recurrence.
 
-No post-mortem has been recorded for PKO v0.1 yet.
+No post-mortem has been recorded for AKE v0.1 yet.

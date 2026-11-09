@@ -12,7 +12,7 @@ Keep the official format of each kind as the human authority, and add the smalle
 
 - **Agent Notes** keep the official path tree `.agents/notes/{lifecycle}/{class}/yyyy-mm-dd-topic.md` (class ∈ feature, bug-fix, simplification, architecture, process, testing) and the official three-line header, `## Problem` opener, mandatory `## Alternatives considered`, and lifecycle sections. They carry **no** frontmatter, so the fixed header stays intact.
 - **Post-mortems** keep the four-digit H1 and a free-form `Status:` line; required sections are `Executive summary`, `Summary`, `Impact`, `Timeline`, `Root cause […]`, `Guardrails […]`.
-- **Defensive patterns and cookbooks** have no official machine-readable status, so they carry a minimal `pko:` frontmatter block (type, id, status, created, scope, evidence) — the only addition. Defensive rules additionally label `**Prevents:**`, `**Reviewer check:**`, `**Boundary:**` so that structure is checkable while their content stays prose.
+- **Defensive patterns and cookbooks** have no official machine-readable status, so they carry a minimal `ake:` frontmatter block (type, id, status, created, scope, evidence) — the only addition. Defensive rules additionally label `**Prevents:**`, `**Reviewer check:**`, `**Boundary:**` so that structure is checkable while their content stays prose.
 - The machine layer never overrides the body: a disagreement between frontmatter and body/path is reported as a validation error. Missing scope/evidence for notes is reported as `unknown`, never invented.
 - `README.md` inside a knowledge root is an index page, skipped by validation and search.
 

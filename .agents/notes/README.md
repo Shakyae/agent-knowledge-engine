@@ -8,4 +8,4 @@ In-file format: the first three lines are exactly `# Agent Note: <title>`, a bla
 
 Rules: update the note that owns a decision instead of creating a duplicate; never edit an implemented note into a different decision — supersede it with a new note and cross-link both; no centralized index (the path is the index). This MVP does not implement the official bilingual triplets or the archived tree.
 
-Validate with `node scripts/kno.mjs validate`; retrieve with `node scripts/kno.mjs search <terms>`.
+Validate with `node scripts/ake.mjs validate`; retrieve with `node scripts/ake.mjs search <terms>`.

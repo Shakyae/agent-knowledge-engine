@@ -1,5 +1,5 @@
 ---
-pko:
+ake:
   type: defensive-pattern
   id: DP-general
   status: active
@@ -100,21 +100,21 @@ if (sha(await read(target)) === record.targetHash) publish()
 
 ## Copy tools as `.mjs`, not `.js`
 
-Modules installed into another project must be `.mjs`. A `.js` file inherits the target's `package.json` type, and a project without `type: module` parses it as CommonJS, so the first `import` fails. `.mjs` is ESM regardless of the target's package boundary, which also means PKO never has to modify the target's `package.json`.
+Modules installed into another project must be `.mjs`. A `.js` file inherits the target's `package.json` type, and a project without `type: module` parses it as CommonJS, so the first `import` fails. `.mjs` is ESM regardless of the target's package boundary, which also means AKE never has to modify the target's `package.json`.
 
-**Prevents:** a freshly initialized project whose installed `kno` CLI crashes on import in an existing CommonJS repository.
+**Prevents:** a freshly initialized project whose installed `ake` CLI crashes on import in an existing CommonJS repository.
 
-**Reviewer check:** the integration suite initializes a target with no `package.json` (and one with `"type": "commonjs"`) and runs `node .pko/tools/scripts/kno.mjs validate` as a subprocess; it must exit 0/1 by validation, not by a module-resolution error.
+**Reviewer check:** the integration suite initializes a target with no `package.json` (and one with `"type": "commonjs"`) and runs `node .ake/tools/scripts/ake.mjs validate` as a subprocess; it must exit 0/1 by validation, not by a module-resolution error.
 
 **Boundary:** requires Node >= 20; nothing is claimed about older runtimes or other package formats.
 
 ```text
-.pko/tools/scripts/kno.mjs          correct: ESM everywhere
-.pko/tools/src/lib/search.mjs
+.ake/tools/scripts/ake.mjs          correct: ESM everywhere
+.ake/tools/src/lib/search.mjs
 ```
 
 ```text
-.pko/tools/scripts/kno.js           wrong in a CommonJS target: SyntaxError on import
+.ake/tools/scripts/ake.js           wrong in a CommonJS target: SyntaxError on import
 ```
 
 ## Prove the gate with real subprocesses

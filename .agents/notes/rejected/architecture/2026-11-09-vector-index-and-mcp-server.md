@@ -16,8 +16,8 @@ Add an embedding index or an MCP server that serves knowledge to agents, replaci
 
 **Small, optional lexical improvement instead (synonym table, heading-aware scoring).** Accepted as the fallback if retrieval misses are observed in real sessions: no service, no dependency, measurable in the same tests.
 
-**Keep keyword search and accept misses.** The current choice: `kno search` reports the searched scope and `coverage: incomplete` conditions honestly, and a miss is reported as "not found", which is actionable without new infrastructure.
+**Keep keyword search and accept misses.** The current choice: `ake search` reports the searched scope and `coverage: incomplete` conditions honestly, and a miss is reported as "not found", which is actionable without new infrastructure.
 
 ## Consequences of the rejection
 
-If real-session tests show recall failures that a synonym table cannot fix, revisit with evidence and a cost estimate. Until then, no vector store, no MCP server and no background service is part of PKO.
+If real-session tests show recall failures that a synonym table cannot fix, revisit with evidence and a cost estimate. Until then, no vector store, no MCP server and no background service is part of AKE.

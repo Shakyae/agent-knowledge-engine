@@ -1,8 +1,8 @@
-# PKO v0.1 设计复审与验收契约
+# AKE v0.1 设计复审与验收契约
 
 > **与现有冻结接口的关系：本评审是变更提案，不擅自改写 [architecture.md](architecture.md)。** 以下与该接口不一致之处须 Lead 裁决后再实施：首行 Agent Note 与必填 frontmatter 的矛盾；人读正文/路径权威及索引冲突规则；hash 原始字节与 normalized body；审核和授权同时绑定目标/操作；缺失知识目录的覆盖语义；init 的状态命名、默认 AGENTS 处理与片段输出；禁止对所有并发都宣称可检测。本文对 absent AGENTS 采取更保守的“不创建”提案，用户只明确禁止静默改写，Lead 可决定是否允许按现有契约创建；缺失目录按本评审视为已确认空目录，亦可按冻结接口保守报告 incomplete。若未获批准，执行者不得把这些差异当作已变更的接口。另需修复冻结接口内部关于 Note 首行/frontmatter、postmortem status 枚举的矛盾。
 >
-> 性质：实施契约与待执行测试，不是实现或验证报告。固定路线为目标项目内 Markdown/Git、AGENTS.md、Skill 和无依赖 Node CLI；状态与记录放在 `.pko/`。以下“必须”是 MVP 验收目标，不是既有能力声明。
+> 性质：实施契约与待执行测试，不是实现或验证报告。固定路线为目标项目内 Markdown/Git、AGENTS.md、Skill 和无依赖 Node CLI；状态与记录放在 `.ake/`。以下“必须”是 MVP 验收目标，不是既有能力声明。
 >
 > 证据：首选 [研究报告 v2](../research/knowledge-ops/REPORT-knowledge-ops-v2.0.md)、[检索研究](../research/knowledge-ops/findings/01-knowledge-retrieval.md)、[团队研究](../research/knowledge-ops/findings/02-team-presets.md)、[发布研究](../research/knowledge-ops/findings/03-review-publishing.md)；四类格式参考 [Agent Notes](../research/knowledge-ops/official/.agents_notes_README.md)、[Defensive patterns](../research/knowledge-ops/official/docs_defensive-patterns_README.md)、[Post-mortems](../research/knowledge-ops/official/docs_postmortem_README.md) 与 [cookbook 样例](../research/knowledge-ops/official/sample-cookbook.md)。抓取的 cookbook README 为 404，不是格式证据；样例更像参考手册，并未证明官方 cookbook 均为步骤型，步骤型是本 MVP 要求。报告中的“当前工作区非 Git 仓库”属于原调研环境，不适用于本项目；本次 `git rev-parse --show-toplevel` 返回当前项目根。
 
@@ -32,8 +32,8 @@
 
 ### 必须满足
 
-- 人读权威是正式 Markdown 正文与其目录承载的类型/生命周期；`.pko/` 中候选状态、审核及授权记录是治理权威，不能覆盖正式正文语义。机器索引可派生 path、type、title、documentStatus、scope、更新时间等，缺失用 `unknown`，不得编造；索引与正式正文/路径冲突时以正文及路径为准，重新生成索引，并把无法消解的正文与路径冲突报告为校验错误。`published` 是治理状态，绝不替代文档状态。
-- 四类均须有非空 H1、非空正文，并按目标目录识别类型；显式空白章节不算合格。范围可从人读内容提取；缺失时报告 `unknown`，不为满足索引虚构范围。可选最小 frontmatter 只做机器辅助，不能覆写人读事实或破坏 Agent Note 首三行的官方格式；推荐元数据存 `.pko/`，无需要求所有文档增加 frontmatter。对于其他三类若确用 frontmatter，须规定键及冲突检查，未实现的自由 YAML 解析不属于 MVP。
+- 人读权威是正式 Markdown 正文与其目录承载的类型/生命周期；`.ake/` 中候选状态、审核及授权记录是治理权威，不能覆盖正式正文语义。机器索引可派生 path、type、title、documentStatus、scope、更新时间等，缺失用 `unknown`，不得编造；索引与正式正文/路径冲突时以正文及路径为准，重新生成索引，并把无法消解的正文与路径冲突报告为校验错误。`published` 是治理状态，绝不替代文档状态。
+- 四类均须有非空 H1、非空正文，并按目标目录识别类型；显式空白章节不算合格。范围可从人读内容提取；缺失时报告 `unknown`，不为满足索引虚构范围。可选最小 frontmatter 只做机器辅助，不能覆写人读事实或破坏 Agent Note 首三行的官方格式；推荐元数据存 `.ake/`，无需要求所有文档增加 frontmatter。对于其他三类若确用 frontmatter，须规定键及冲突检查，未实现的自由 YAML 解析不属于 MVP。
 - **Agent Note**：首三行严格为 `# Agent Note: <非空标题>`、空行、`Status: <值>`，接空行。目录 `.agents/notes/{proposed,implemented,rejected}/<class>/<yyyy-mm-dd>-<topic>.md`；class 用官方六值 feature、bug-fix、simplification、architecture、process、testing，日期需合法。Status 分别为 `proposed`、`implemented`、`rejected — <非空理由>` 且与目录一致。`## Problem` 是正文第一个二级章节；均需非空 `## Alternatives considered`；proposed 另需非空 `## Proposal`、`## Acceptance criteria`、`## Risks`；implemented 另需非空 `## Decision`、`## Consequences`，拒绝 Proposal/Plan/Migration plan/Acceptance criteria 章节；rejected 需非空 `## Proposal`，保留原提案内容。分类/日期仅供结构检查，不自动证明历史或已交付事实。
 - **Defensive pattern**：每条规则以独立二级章节承载；每条必须有非空规则陈述、预防缺陷、reviewer 判定条件、边界及例外审批、正确例与错误例。MVP 可规定对应明确子标题以便逐条校验，允许一个文件多条规则；机器仅能检查结构和非空，不能判断范例正确或边界合理。此为本 MVP 的可机检约束，官方样例不保证每条均显式分节，导入既有样例可能需人工整理，不能宣称完全兼容官方现存文件。
 - **Postmortem**：非空 `# Post-mortem NNNN: <标题>`，NNNN 为四位数字，非空 `Status:` 行（不强加 note 的枚举）；非空二级 `Executive summary`、`Summary`、`Impact`、`Timeline`，以及以 `Root cause` 开头和以 `Guardrails` 开头的非空二级章节，允许编号/描述性后缀以兼容官方样例。Status 的具体含义由正文解释，不推断事故已经解决。
@@ -74,7 +74,7 @@
 ### 必须满足
 
 - 从指定目标或 cwd 向上找到**最近包含 `.git` 文件或目录**的祖先作为 projectRoot，并以 Git 自身检查确认其为有效工作树（含 worktree 的 `.git` 文件）；裸仓库、伪造/损坏 `.git` 或无法运行 Git 均拒绝且无写入，不自动 `git init`。嵌套仓库以最近者为准；路径规范化后不得向目标根外写入，拒绝不安全符号链接路径。
-- 创建项目内 `.pko/tools` 可独立运行的 CLI 及其必要模块，以及 `<projectRoot>/.agents/skills/knowledge-ops/SKILL.md`；该路径符合研究资料所述 DSH filesystem provider 的项目 skill 根和直属 `name/SKILL.md` 形状，skill 的 frontmatter 包含有效 name、description。实际发现依赖对应 provider、配置、同名遮蔽与刷新，不能仅凭路径宣称已加载。
+- 创建项目内 `.ake/tools` 可独立运行的 CLI 及其必要模块，以及 `<projectRoot>/.agents/skills/knowledge-ops/SKILL.md`；该路径符合研究资料所述 DSH filesystem provider 的项目 skill 根和直属 `name/SKILL.md` 形状，skill 的 frontmatter 包含有效 name、description。实际发现依赖对应 provider、配置、同名遮蔽与刷新，不能仅凭路径宣称已加载。
 - 逐项先计划再应用：目标不存在且安全时创建；已有内容字节相同为 `identical`，无修改；明确不处理/不需要处理为 `skip`，列出原因；已有不同内容、类型不符、不可读或不安全为 `conflict`，原样保留并报告。不得将不同内容悄悄标成 skip 或覆盖。重复运行不修改任何已创建文件；混合冲突可创建互不依赖且安全的缺失项，但总体返回有冲突并逐项报告，不能声称完全成功。
 - `AGENTS.md` 默认绝不修改：报告已存在/不存在并输出建议片段（输出到终端或结果，不需额外创建文件）。只有显式 flag 才可追加带唯一 begin/end 标记的片段；若文件不存在，仍只报告/提供片段，不自行创建 AGENTS.md；已存在一份完全相同的完整标记块则 identical，未标记同文、标记不配对/重复、已有标记块不同或文件不可安全读取为 conflict；追加保留原有全部字节，重复运行不重复追加。显式 flag 不授权改写既有标记块。
 - 复制后的工具不得依赖源仓库绝对路径或第三方包；以目标仓库外的不同 cwd 测试所公布的调用方式。裸 Node 的 `.mjs`/`.js` 模块类型取决于目标项目包边界，必须明确兼容方式且不修改目标 `package.json`；不能假定 ESM `.js` 在所有已有项目中可运行。

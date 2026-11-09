@@ -6,6 +6,6 @@
     "postmortem": "docs/postmortem",
     "cookbook": "docs/cookbook"
   },
-  "candidatesDir": ".pko/candidates",
-  "publishLog": ".pko/publish-log.jsonl"
+  "candidatesDir": ".ake/candidates",
+  "publishLog": ".ake/publish-log.jsonl"
 }

@@ -5,11 +5,11 @@ import { spawnSync } from 'node:child_process';
 export const defaultConfig = {
   version: '0.1.0',
   knowledgeRoots: { note: '.agents/notes', 'defensive-pattern': 'docs/defensive-patterns', postmortem: 'docs/postmortem', cookbook: 'docs/cookbook' },
-  candidatesDir: '.pko/candidates', publishLog: '.pko/publish-log.jsonl',
+  candidatesDir: '.ake/candidates', publishLog: '.ake/publish-log.jsonl',
 };
 export const kindRoot = kind => defaultConfig.knowledgeRoots[kind];
 export async function loadConfig(root) {
-  const file = path.resolve(root, '.pko/config.json');
+  const file = path.resolve(root, '.ake/config.json');
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8'));
     return { ...defaultConfig, ...parsed, knowledgeRoots: { ...defaultConfig.knowledgeRoots, ...parsed.knowledgeRoots }, source: file, fallback: false };
@@ -26,11 +26,11 @@ export async function resolveProjectRoot(cwd = process.cwd(), explicit) {
   const start = path.resolve(cwd, explicit ?? '.');
   const result = spawnSync('git', ['-C', start, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
   if (result.status !== 0 || result.stdout.trim() !== 'true') {
-    if (explicit) throw Error(`not a PKO project: ${start} is not a valid Git work tree`);
-    throw Error('not a PKO project: no .git repository found');
+    if (explicit) throw Error(`not a AKE project: ${start} is not a valid Git work tree`);
+    throw Error('not a AKE project: no .git repository found');
   }
   const top = spawnSync('git', ['-C', start, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
-  if (top.status !== 0 || !top.stdout.trim()) throw Error(`not a PKO project: cannot resolve Git work tree root from ${start}`);
+  if (top.status !== 0 || !top.stdout.trim()) throw Error(`not a AKE project: cannot resolve Git work tree root from ${start}`);
   return path.resolve(top.stdout.trim());
 }
 export function resolveKindTarget(root, config, kind, target, noteStatus) {

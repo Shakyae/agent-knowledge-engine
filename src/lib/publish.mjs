@@ -41,8 +41,8 @@ export async function publish(root, id, { dryRun = false, reconcile: doReconcile
   if(m.targetHash==='absent'&&previous!=='absent'||m.targetHash!=='absent'&&previous!==m.targetHash){const operation=previous==='absent'?'create':'update';await invalidateObservedDrift(c,{reason:`observed target drift: targetHash ${String(m.targetHash).slice(0,12)} -> ${previous.slice(0,12)}`,observed:{contentHash,target:m.target,targetHash:previous,operation}});throw Error('target changed since candidate creation; re-review required; previous review/approval invalidated by observed drift')}
   const errors=validateDocument(body,m.target,{knowledgeRoots:config.knowledgeRoots,projectRoot:root});if(errors.length)throw Error(errors.map(x=>`${x.path}:${x.line} ${x.message}`).join('; '));
   for(const href of linksIn(body)){const dest=path.resolve(path.dirname(target),href);await assertRealInside(root,dest);try{await readFile(dest)}catch{throw Error(`dangling relative link ${href}`)}}
-  const idValue=parseFrontmatter(body).data?.pko?.id;
-  for(const [kind,base]of Object.entries(config.knowledgeRoots))for(const f of await filesBelow(path.resolve(root,base))){if(path.resolve(f)===target)continue;const p=parseFrontmatter(await readText(f));if(idValue&&p.data?.pko?.id===idValue)throw Error(`target id collision: ${idValue} at ${path.relative(root,f)}`)}
+  const idValue=parseFrontmatter(body).data?.ake?.id;
+  for(const [kind,base]of Object.entries(config.knowledgeRoots))for(const f of await filesBelow(path.resolve(root,base))){if(path.resolve(f)===target)continue;const p=parseFrontmatter(await readText(f));if(idValue&&p.data?.ake?.id===idValue)throw Error(`target id collision: ${idValue} at ${path.relative(root,f)}`)}
   const checked=await checkCandidate(root,c);if(checked.errors.length)throw Error(`candidate check failed: ${checked.errors.join('; ')}`);
   const logPath=path.resolve(root,config.publishLog);await assertRealInside(root,logPath);
   if(dryRun)return {dryRun:true,target:m.target,contentHash,previousTargetHash:previous};

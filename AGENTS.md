@@ -1,6 +1,6 @@
-# AGENTS.md — Agent Knowledge Engine (PKO) development rules
+# AGENTS.md — Agent Knowledge Engine (AKE) development rules
 
-This repository develops **PKO itself**. For the file a *target* project receives, use `templates/project/AGENTS.md`; never confuse the two.
+This repository develops **AKE itself**. For the file a *target* project receives, use `templates/project/AGENTS.md`; never confuse the two.
 
 ## Contract first
 
@@ -16,13 +16,13 @@ This repository develops **PKO itself**. For the file a *target* project receive
 
 ## Knowledge workflow (dogfooding)
 
-Before changing code here, retrieve relevant knowledge from `.agents/notes/`, `docs/defensive-patterns/`, `docs/postmortem/`, `docs/cookbook/` with `node scripts/kno.mjs search <terms>`, then read only the hits whose `scope`/`verified` still apply.
+Before changing code here, retrieve relevant knowledge from `.agents/notes/`, `docs/defensive-patterns/`, `docs/postmortem/`, `docs/cookbook/` with `node scripts/ake.mjs search <terms>`, then read only the hits whose `scope`/`verified` still apply.
 
-After finishing a task, check whether durable, evidence-backed knowledge emerged. Prefer updating an existing authoritative document over creating a parallel one. Candidates live in `.pko/candidates/`; formal knowledge is only ever promoted through `review` → human `approve` → `publish`, and never silently rewritten.
+After finishing a task, check whether durable, evidence-backed knowledge emerged. Prefer updating an existing authoritative document over creating a parallel one. Candidates live in `.ake/candidates/`; formal knowledge is only ever promoted through `review` → human `approve` → `publish`, and never silently rewritten.
 
 ## Working rules
 
 - Small steps; run `npm test` (and `npm run check` when knowledge docs changed) after each meaningful change.
 - Do not create knowledge directories or abstractions that no current requirement justifies.
 - Do not modify the DSH host, plugins, installed packages, team presets or user-level configuration; do not install global dependencies.
-- Temporary or generated files go under ignored paths (`tests/.work/`, `.pko-tmp/`), never in the repo root.
+- Temporary or generated files go under ignored paths (`tests/.work/`, `.ake-tmp/`), never in the repo root.

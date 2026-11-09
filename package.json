@@ -9,12 +9,12 @@
     "node": ">=20"
   },
   "bin": {
-    "kno": "./scripts/kno.mjs"
+    "ake": "./scripts/ake.mjs"
   },
   "scripts": {
     "test": "node --test tests/unit tests/integration",
-    "check": "npm test && node scripts/kno.mjs validate --project .",
-    "kno": "node scripts/kno.mjs"
+    "check": "npm test && node scripts/ake.mjs validate --project .",
+    "ake": "node scripts/ake.mjs"
   },
   "files": [
     "scripts",

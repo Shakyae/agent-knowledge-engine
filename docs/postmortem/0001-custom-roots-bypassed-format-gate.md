@@ -12,7 +12,7 @@ During independent review, a test project configured `knowledgeRoots.cookbook` t
 
 ## Impact
 
-Any team that reorganized its knowledge directories — the documented way to adopt PKO in an existing project — would have lost the entire format gate while every command kept reporting success. The damage is not data loss but silent false assurance: unpublished, unreviewable-quality knowledge would enter the formal library and every later `validate` would confirm it as clean.
+Any team that reorganized its knowledge directories — the documented way to adopt AKE in an existing project — would have lost the entire format gate while every command kept reporting success. The damage is not data loss but silent false assurance: unpublished, unreviewable-quality knowledge would enter the formal library and every later `validate` would confirm it as clean.
 
 ## Timeline
 

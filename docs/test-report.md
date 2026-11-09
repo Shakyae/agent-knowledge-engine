@@ -1,6 +1,10 @@
-# PKO v0.1 — Test Report
+# AKE v0.1 — Test Report
 
 Status: v0.1 acceptance record. Every claim below carries its evidence level. Anything not executed is listed as unverified and is not counted as passing.
+
+## Naming
+
+v0.1 was developed under the working name `PKO` and CLI `kno`, and delivered as **AKE** (`Agent Knowledge Engine`) with CLI `ake`. The rename was mechanical (`.pko/` → `.ake/`, `pko:` → `ake:`, `kno` → `ake`) and re-verified: 59/59 tests and `validate` 0/0 after it. See `.agents/notes/implemented/process/2026-11-10-rename-working-name-to-ake.md`; reports in `docs/reviews/` were renamed with the same rules (see `docs/reviews/README.md`).
 
 ## Environment
 
@@ -36,16 +40,16 @@ Covered: four-kind format gates (positive and negative; note header/lifecycle/cl
 - `cli.test.mjs`: project-root resolution (`--project`, nested directory, external CWD), exit codes, JSON shapes.
 - `search.test.mjs`, `tools.test.mjs`: coverage reporting, copied tool execution from another CWD and different package boundaries.
 
-Repository self-check: `node scripts/kno.mjs validate --project .` → `0 errors, 0 warnings`. `node scripts/kno.mjs status` → 9 knowledge documents, 0 pending candidates.
+Repository self-check: `node scripts/ake.mjs validate --project .` → `0 errors, 0 warnings`. `node scripts/ake.mjs status` → 9 knowledge documents, 0 pending candidates.
 
 ## Test A — cross-session knowledge reuse (real DSH Single Session)
 
-Setup: isolated Git project `.pko-tmp/lead-e2e/proj` (gitignored, initialized with `kno init`). Earlier "session" published a note about bounding retries by a caller deadline (approved and published through the candidate flow). The fixture contains a genuine bug: `src/client.mjs` retried 5 times with a fixed 2-second delay and ignored the caller deadline; `node test/client.mjs` reported `failed after 5 calls in 10006 ms`.
+Setup: isolated Git project `.ake-tmp/lead-e2e/proj` (gitignored, initialized with `ake init`). Earlier "session" published a note about bounding retries by a caller deadline (approved and published through the candidate flow). The fixture contains a genuine bug: `src/client.mjs` retried 5 times with a fixed 2-second delay and ignored the caller deadline; `node test/client.mjs` reported `failed after 5 calls in 10006 ms`.
 
 A **fresh sub-agent session** (no shared history, cwd = that project) was given only the bug report and asked to fix it.
 
 Observed, from the session's own report:
-- It ran `node .pko/tools/scripts/kno.mjs search "deadline retry abort timeout client"`.
+- It ran `node .ake/tools/scripts/ake.mjs search "deadline retry abort timeout client"`.
 - It found and read `.agents/notes/proposed/architecture/2026-11-09-deadline-budget.md` and used the note's design: one deadline budget, subtract elapsed time before each retry, stop when exhausted, expose attempts/remaining budget.
 - It judged the note's status (`proposed`) and treated it as guidance rather than ratified fact.
 - Implementation result: `DEADLINE_MS = 3000`, no attempt starts at/after the deadline, retry sleeps capped by the remaining budget, thrown error carries `attemptsUsed`, `remainingMs`, `deadlineMs`.
@@ -72,7 +76,7 @@ The approval string is a declaration, not a verified signature (P-UNVERIFIED-1).
 
 ## Test D — real Agent Teams collaboration
 
-Project `.pko-tmp/team-d`, initialized by `kno init`; roles: `executor-2` (author), `reviewer` (independent reviewer), Lead (designated publisher). Every step is CLI-recorded.
+Project `.ake-tmp/team-d`, initialized by `ake init`; roles: `executor-2` (author), `reviewer` (independent reviewer), Lead (designated publisher). Every step is CLI-recorded.
 
 1. **Distributed retrieval.** The author searched all four roots (`coverage: complete`, 0 results: "not found", not "does not exist"). The reviewer independently repeated the search and reported coverage complete, 0 results.
 2. **Capture in place.** The author created candidate `C-0001` (kind defensive-pattern, target `docs/defensive-patterns/retry-and-timeouts.md`). The first `submit` was **rejected** by the format gate: `docs/defensive-patterns/retry-and-timeouts.md:1 defensive-pattern H1 is required`; the author fixed the document and resubmitted.
@@ -98,10 +102,10 @@ Executed independently by the Lead in fresh real Git repositories:
 
 - Dry run: exit 0, plan only, `ls -a` shows no new files (only `.git` and the fixture).
 - Apply: 26 items `created`, `conflicts: 0`, exit 0; second run: 17 `identical` + 9 `skip`, exit 0, `git status` unchanged (idempotent).
-- Pre-existing `AGENTS.md` + pre-existing `docs/cookbook/README.md`: exit 1, both files byte-identical afterwards, other missing items created, `.pko/AGENTS-fragment.md` written for manual merge.
+- Pre-existing `AGENTS.md` + pre-existing `docs/cookbook/README.md`: exit 1, both files byte-identical afterwards, other missing items created, `.ake/AGENTS-fragment.md` written for manual merge.
 - `--merge-agents`: appends the marked block, preserves the original bytes, second run is stable (`identical`).
 - Skill install: `.agents/skills/knowledge-ops/SKILL.md` with a valid `name: knowledge-ops` frontmatter; discovery confirmed by the Test A fresh session, which listed and loaded it.
-- Copied CLI: `.pko/tools/scripts/kno.mjs` (with `.mjs` modules) runs `validate`/`search` in a target whose `package.json` is absent or CommonJS, from a different CWD and from a project subdirectory.
+- Copied CLI: `.ake/tools/scripts/ake.mjs` (with `.mjs` modules) runs `validate`/`search` in a target whose `package.json` is absent or CommonJS, from a different CWD and from a project subdirectory.
 - Non-Git target: exit 1, zero writes.
 
 ## Failures found and fixed during v0.1
@@ -115,7 +119,7 @@ Recorded because v0.1 is only worth trusting if its defects are visible.
 | 3 | `--limit` truncation still reported `coverage: complete` | reviewer | yes — truncation ⇒ incomplete + reason |
 | 4 | Write succeeded but ledger update failed could be reported as an ordinary error | reviewer | yes — unknown-result branch with non-destructive refusal |
 | 5 | `submit` accepted terminal/approved states, allowing state replay | reviewer | yes — only `draft → submitted`; other states exit 1 with unchanged bytes |
-| 6 | `init --dir` from outside the PKO repo asked the CWD to be a PKO project | reviewer | yes — init resolves the target itself; external CWD works |
+| 6 | `init --dir` from outside the AKE repo asked the CWD to be a AKE project | reviewer | yes — init resolves the target itself; external CWD works |
 | 7 | Revision test wrote reviews/approval only to memory, so it could pass without real invalidation | reviewer | yes — assertions now read persisted candidate state |
 | 8 | Observed drift invalidated approval only in memory; restoring the bytes revived it | Lead acceptance | yes — invalidation persisted (`invalidations[]`, reviews/approval cleared, status back to submitted); restore still refuses |
 | 9 | The final pre-write target re-read observed drift but persisted no invalidation | reviewer | yes — all observation points now persist invalidation; restore still refuses |
@@ -156,14 +160,14 @@ The implementation was reviewed by an independent reviewer who did not write it,
 | 3 | [review-3.md](reviews/review-3.md) | not ready: P1-D duplicate ledger line in reconcile; §9-6 evidence independently checked |
 | 4 | [review-4.md](reviews/review-4.md) | **v0.1 accepted** (59/59 tests, validate 0/0); remaining items P2 wording, fixed before this commit; unverified items not counted as passing |
 
-Lead acceptance additionally executed, independently of the reviewed test suite: a fresh-session retrieval run (Test A), a three-member team run (Test D), the initialization safety matrix (Test F), the evolution scenario (Test E), and a real ledger-failure/reconcile run by turning `.pko/publish-log.jsonl` into a directory.
+Lead acceptance additionally executed, independently of the reviewed test suite: a fresh-session retrieval run (Test A), a three-member team run (Test D), the initialization safety matrix (Test F), the evolution scenario (Test E), and a real ledger-failure/reconcile run by turning `.ake/publish-log.jsonl` into a directory.
 
 ## Reproduction
 
 ```bash
 npm test                                   # 59 tests: 38 unit + 21 integration
-node scripts/kno.mjs validate --project .  # 0 errors, 0 warnings
-node scripts/kno.mjs status
+node scripts/ake.mjs validate --project .  # 0 errors, 0 warnings
+node scripts/ake.mjs status
 ```
 
-The real-session and real-team runs used gitignored `.pko-tmp/` projects; the commands and outputs are recorded above and in [review-1.md](reviews/review-1.md) / [review-2.md](reviews/review-2.md). Temporary projects are disposable by design — recreate them with `kno init`.
+The real-session and real-team runs used gitignored `.ake-tmp/` projects; the commands and outputs are recorded above and in [review-1.md](reviews/review-1.md) / [review-2.md](reviews/review-2.md). Temporary projects are disposable by design — recreate them with `ake init`.

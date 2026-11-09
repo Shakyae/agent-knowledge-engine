@@ -1,4 +1,4 @@
-# PKO v0.1 独立审查 1
+# AKE v0.1 独立审查 1
 
 **结论：需修复后复审，不予放行。** 审查时间 2026-11-09；被审文件均未提交。P0 指阻断冻结契约验收，不表示安全隔离失效（产品不承诺隔离）。
 
@@ -14,7 +14,7 @@
 ## Findings
 
 ### P0-1｜代码 bug：配置根绕过格式门禁
-- [documents.mjs:10–15](../../src/lib/documents.mjs#L10-L15)、[scripts/kno.mjs:40](../../scripts/kno.mjs#L40)、[publish.mjs:21](../../src/lib/publish.mjs#L21)：类型靠硬编码默认目录推断，非默认根得到 null 后返回零错误；submit、publish 和 validate 都误认无效正文合格。
+- [documents.mjs:10–15](../../src/lib/documents.mjs#L10-L15)、[scripts/ake.mjs:40](../../scripts/ake.mjs#L40)、[publish.mjs:21](../../src/lib/publish.mjs#L21)：类型靠硬编码默认目录推断，非默认根得到 null 后返回零错误；submit、publish 和 validate 都误认无效正文合格。
 - 独立真实仓库将 `knowledgeRoots.cookbook` 设为 `custom/recipes`，`printf 'this is invalid\n' > "$T/bad.txt"`；执行下方 C-0003 全链路后 `published custom/recipes/bad.md; ledger updated`、exit 0，`$K validate --project "$T"` 返回 `0 errors, 0 warnings`。
 - 修复：按配置 roots 识别 kind 并显式传入文档校验器；未知/重叠根须 fail-closed；覆盖四类自定义根、候选、validate、搜索类型及反例。
 
@@ -24,7 +24,7 @@
 - 修复：按行检查各标签同一行真实值，补三个标签各自为空及下一行标签的反例，并覆盖 CLI submit/publish。
 
 ### P1-1｜代码 bug + 测试反向固化：截断仍显示覆盖完整
-- [search.mjs:20–21](../../src/lib/search.mjs#L20-L21)、[search.test.mjs:6](../../tests/unit/search.test.mjs#L6)：`node scripts/kno.mjs search knowledge --limit 0 --json` 返回 `coverage=complete, truncated=true, results=0`；理由为 `results truncated to 0 of 8`。违反 §5；测试明确断言错误的 complete。无结果文本还可能误导为未命中。
+- [search.mjs:20–21](../../src/lib/search.mjs#L20-L21)、[search.test.mjs:6](../../tests/unit/search.test.mjs#L6)：`node scripts/ake.mjs search knowledge --limit 0 --json` 返回 `coverage=complete, truncated=true, results=0`；理由为 `results truncated to 0 of 8`。违反 §5；测试明确断言错误的 complete。无结果文本还可能误导为未命中。
 - 修复：结果截断令 coverage incomplete；区分零展示与零命中，修改现有断言并覆盖有命中但被截断的 CLI 输出。
 
 ### P1-2｜代码 bug：目标已写后校验失败未报告 unknown
@@ -33,11 +33,11 @@
 - 修复：将写后读取和 hash 确认失败归入未知结果分支，人工对账；注入相应故障并断言目标和账本状态。真实崩溃恢复仍需独立验证。
 
 ### P1-3｜代码 bug：状态机缺合法跃迁检查
-- [scripts/kno.mjs:40](../../scripts/kno.mjs#L40)：submit 不检查旧 status 或清除旧 review/approval；可从 reviewed、approved、rejected、published 再 submit 而不 revise，违背状态/终态语义。静态证据：该分支直接把 `c.meta.status='submitted'`；现有集成测试无终态重放断言。
+- [scripts/ake.mjs:40](../../scripts/ake.mjs#L40)：submit 不检查旧 status 或清除旧 review/approval；可从 reviewed、approved、rejected、published 再 submit 而不 revise，违背状态/终态语义。静态证据：该分支直接把 `c.meta.status='submitted'`；现有集成测试无终态重放断言。
 - 修复：规定只允许 draft→submitted，拒绝终态或越级重放；验证失败不写候选、不恢复旧绑定。
 
 ### P1-4｜代码 bug：外部 cwd 指定 init 目标仍要求 cwd 是 Git
-- [scripts/kno.mjs:31–32](../../scripts/kno.mjs#L31-L32)：`cd /tmp && node /Users/shakya/dev/agent-knowledge-engine/scripts/kno.mjs init --dir /Users/shakya/dev/agent-knowledge-engine --dry-run` 返回 `not a PKO project: no .git repository found`，exit 1；目标本身是有效 Git，违背 init 指定目标语义。
+- [scripts/ake.mjs:31–32](../../scripts/ake.mjs#L31-L32)：`cd /tmp && node /Users/shakya/dev/agent-knowledge-engine/scripts/ake.mjs init --dir /Users/shakya/dev/agent-knowledge-engine --dry-run` 返回 `not a AKE project: no .git repository found`，exit 1；目标本身是有效 Git，违背 init 指定目标语义。
 - 修复：init 先以 `--dir` 解析验证目标，其他命令再按 `--project`/cwd 解析；补外部 cwd 的真实 CLI 测试。
 
 ### P1-5｜测试缺口：修订失效断言未真正放入旧记录
@@ -55,19 +55,19 @@
 - 未见需要新增架构抽象；相反重复遍历可收敛。`--reviewer`/`--by` 可伪造及普通工具绕过为明确非安全边界，不算漏洞。
 
 ## 实测记录（命令和关键输出）
-环境 Node `v26.13.0`；`npm test`：`tests 42; pass 42; fail 0`；`node scripts/kno.mjs validate --project .`：`0 errors, 0 warnings`；`node scripts/kno.mjs status`：`9 knowledge documents; 5 type/status groups; 0 pending candidates; verified unknown=6, pending=3`；均 exit 0。
+环境 Node `v26.13.0`；`npm test`：`tests 42; pass 42; fail 0`；`node scripts/ake.mjs validate --project .`：`0 errors, 0 warnings`；`node scripts/ake.mjs status`：`9 knowledge documents; 5 type/status groups; 0 pending candidates; verified unknown=6, pending=3`；均 exit 0。
 
-独立实验变量：`T=/var/folders/4h/9g7lzjcn23d0vd44jf5_mv0r0000gn/T//pko-review-6rG7Zw`；`K="$T/.pko/tools/scripts/kno.mjs"`；`P=.agents/notes/proposed/process/2026-11-09-review-example.md`。用 `git -C "$T" init -q` 创建真实仓库；`node "$PWD/scripts/kno.mjs" init --dir "$T" --json` exit 0。正文 `$T/body.txt` 是合法 proposed note，含 Problem/Proposal/Alternatives considered/Acceptance criteria/Risks。
+独立实验变量：`T=/var/folders/4h/9g7lzjcn23d0vd44jf5_mv0r0000gn/T//ake-review-6rG7Zw`；`K="$T/.ake/tools/scripts/ake.mjs"`；`P=.agents/notes/proposed/process/2026-11-09-review-example.md`。用 `git -C "$T" init -q` 创建真实仓库；`node "$PWD/scripts/ake.mjs" init --dir "$T" --json` exit 0。正文 `$T/body.txt` 是合法 proposed note，含 Problem/Proposal/Alternatives considered/Acceptance criteria/Risks。
 
 - `node "$K" candidate new --project "$T" --kind note --title 'Review example' --author alice --target "$P" --body "$T/body.txt"` → `candidate C-0001 created (draft)`；`node "$K" candidate submit C-0001 --project "$T"` → submitted；均 exit 0。
 - `node "$K" review C-0001 --project "$T" --reviewer alice --verdict approve --notes checked` → `a candidate author cannot review its own candidate`，exit 1。
 - `node "$K" review C-0001 --project "$T" --reviewer bob --verdict approve --notes checked` → reviewed；`node "$K" approve C-0001 --project "$T" --by arbitrary-nonhuman-string --confirm` → approved；均 exit 0，身份只是字符串声明。
-- `printf '\nChanged.\n' >> "$T/.pko/candidates/C-0001-review-example.md"; node "$K" publish C-0001 --project "$T"` → `contentHash mismatch; re-submit and re-review`，exit 1。
+- `printf '\nChanged.\n' >> "$T/.ake/candidates/C-0001-review-example.md"; node "$K" publish C-0001 --project "$T"` → `contentHash mismatch; re-submit and re-review`，exit 1。
 - `node "$K" candidate revise C-0001 --project "$T" --body "$T/body.txt"` → revision 2 draft；重新执行上述 submit、bob review、approve 后 `node "$K" publish C-0001 --project "$T"` → `published ...; ledger updated`，exit 0。
 - `cd /tmp; node "$K" search 'Review example' --project "$T" --json` → query terms `review`, `example`；`node "$K" validate --project "$T"` → `0 errors, 0 warnings`，exit 0。search 输出截取未独立核对命中内容；现有 e2e 测试断言实际路径。
 - `node "$K" candidate new --project "$T" --kind note --title 'Update example' --author alice --target "$P" --body "$T/body.txt"` → C-0002；依次 submit、bob review、arbitrary-nonhuman-string approve 均 exit 0。`printf '\nDirect bypass write.\n' >> "$T/$P"` 直接写正式文件成功（P-PROMPT-2 边界事实）；`node "$K" publish C-0002 --project "$T"` → `target changed since candidate creation; re-review required`，exit 1。
-- 自定义根：`node -e 'const fs=require("fs");let p=process.argv[1];let c=JSON.parse(fs.readFileSync(p));c.knowledgeRoots.cookbook="custom/recipes";fs.writeFileSync(p,JSON.stringify(c));' "$T/.pko/config.json"`；`printf 'this is invalid\n' > "$T/bad.txt"`；`node "$K" candidate new --project "$T" --kind cookbook --title Bad --author alice --target custom/recipes/bad.md --body "$T/bad.txt"` → C-0003；submit、bob review、`approve C-0003 --project "$T" --by fake --confirm`、publish 全 exit 0；详见 P0-1。
-- 临时路径已在清理前记录，`rm -rf -- "$T"` 仅在验证其为本次 `pko-review-*` 临时目录后执行；未更改被审实现、未安装依赖、未提交 Git。
+- 自定义根：`node -e 'const fs=require("fs");let p=process.argv[1];let c=JSON.parse(fs.readFileSync(p));c.knowledgeRoots.cookbook="custom/recipes";fs.writeFileSync(p,JSON.stringify(c));' "$T/.ake/config.json"`；`printf 'this is invalid\n' > "$T/bad.txt"`；`node "$K" candidate new --project "$T" --kind cookbook --title Bad --author alice --target custom/recipes/bad.md --body "$T/bad.txt"` → C-0003；submit、bob review、`approve C-0003 --project "$T" --by fake --confirm`、publish 全 exit 0；详见 P0-1。
+- 临时路径已在清理前记录，`rm -rf -- "$T"` 仅在验证其为本次 `ake-review-*` 临时目录后执行；未更改被审实现、未安装依赖、未提交 Git。
 
 ## 边界与 Lead 裁决
 - **P-PROMPT-1/2**：Skill 和模板确有软性要求；直接写入证明不构成强制控制。**P-CHECK-1/2**：自审、正文/目标漂移拒绝有实测，但 P0 显示不能笼统宣称所有格式门禁合格。**P-UNVERIFIED-1–4**：真实身份、Skill 实际加载、真实任务效果、平台及崩溃恢复未验证。
