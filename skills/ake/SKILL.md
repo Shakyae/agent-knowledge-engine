@@ -1,9 +1,11 @@
 ---
-name: knowledge-ops
+name: ake
 description: 在实现、架构、排障、部署、风险变更前检索工程知识，任务后沉淀候选，并触发审核与发布流程时使用。
 ---
 
-# Knowledge operations
+# AKE knowledge operations
+
+在已初始化的目标项目根目录执行以下命令；该项目的 `.ake/tools` 是 CLI，不引用 Skill 安装位置或其他项目。未初始化时先按 AKE README 从源码运行 `ake init`，不要在其他项目中执行这些命令。
 
 ## 任务前检索
 - 面对实现、架构、排障、测试、部署或风险变更，先按模块/技术、症状、操作构造具体关键词，执行 `node .ake/tools/scripts/ake.mjs search <terms>`。

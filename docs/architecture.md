@@ -1,12 +1,12 @@
 # Agent Knowledge Engine (AKE) — Architecture & v0.1 Contract
 
-Status: v0.1 **frozen** interface, amended after independent design review (see [design-review.md](design-review.md) and the adjudications recorded in `.agents/notes/implemented/process/`). Deviations must be proposed to the Lead before coding.
+Status: v0.1 **frozen** interface, amended after independent design review (see [design-review.md](design-review.md) and the adjudications recorded in `.agents/notes/implemented/process/`). User-requested amendment: the Skill is named `ake`, supports project and user scope, and user installation is a separate explicit operation; see [README installation and migration](../README.md#updates-and-migration). Other deviations must be proposed to the Lead before coding.
 
 ## 1. Purpose and non-goals
 
 AKE makes a **project's engineering knowledge** discoverable, reusable, capturable and reviewable by coding agents, without a runtime service.
 
-v0.1 delivers: a project knowledge layout compatible with the official DSH knowledge conventions, one Knowledge-Ops Skill, one small dependency-free Node CLI, a conservative project initializer, and automated + isolation-project tests.
+v0.1 delivers: a project knowledge layout compatible with the official DSH knowledge conventions, one `ake` Skill, one small dependency-free Node CLI, a conservative project initializer, and automated + isolation-project tests.
 
 Explicit non-goals (do not build in v0.1): DSH runtime plugin, MCP server, vector index, background memory service, web UI, approval server, automatic publishing without a human authorization record, cross-repo sync, bilingual note triplets, the `archived/` tree, `##`-section semantic judgement.
 
@@ -21,7 +21,7 @@ README.md              # product, install, init, use, limitations
 package.json           # scripts: test, check; no runtime dependencies
 src/lib/*.mjs          # parsing, search, validation, candidate lifecycle, publish, init (ESM)
 scripts/ake.mjs        # CLI entry (imports ../src/lib/*.mjs)
-skills/knowledge-ops/SKILL.md
+skills/ake/SKILL.md
 templates/project/     # installed into target projects by `ake init`
 tests/unit/ tests/integration/ tests/fixtures/
 docs/architecture.md docs/test-report.md docs/design-review.md docs/reviews/
@@ -37,7 +37,7 @@ Own repo dogfoods AKE: `.agents/notes/`, `docs/defensive-patterns/`, `docs/cookb
 ```text
 <target>/
 ├── .agents/notes/{proposed,implemented,rejected}/{class}/  # official lifecycle + class tree
-├── .agents/skills/knowledge-ops/SKILL.md                   # discoverable by DSH
+├── .agents/skills/ake/SKILL.md                   # optional separate Skill installation
 ├── docs/defensive-patterns/  docs/postmortem/  docs/cookbook/
 ├── .ake/
 │   ├── config.json          # knowledge roots + version
@@ -248,10 +248,9 @@ Plan first, then apply. Each item gets exactly one outcome:
 
 Exit 1 if any conflict; 0 otherwise. Mixed outcomes still create safe missing items. `--dry-run` prints the plan only. Never overwrite, merge, upgrade, delete, auto-commit, or modify `package.json`; never write outside the project root; refuse paths that resolve through symlinks escaping the root.
 
-Item set (single source of each artifact — `templates/project/` holds only knowledge index pages and the `AGENTS.md` block; the skill comes from `skills/`, the config is generated from code):
+Item set (templates contain knowledge index pages and the `AGENTS.md` block; the config is generated from code). Skill installation is separate and uses `skills/ake/` as its source:
 
 - four knowledge roots with the templates' index READMEs;
-- `.agents/skills/knowledge-ops/SKILL.md`, copied from `skills/knowledge-ops/SKILL.md`;
 - `.ake/config.json`, generated from the code's defaults (not a template copy);
 - `.ake/tools/scripts/ake.mjs` + `.ake/tools/src/lib/*.mjs` (byte-identical `.mjs` copies);
 - `.ake/candidates/` directory (the publish log is created on first publish, not as an empty file);
@@ -264,7 +263,7 @@ Item set (single source of each artifact — `templates/project/` holds only kno
 - present with malformed/unpaired/duplicate markers → `conflict`, unmodified.
 - `--merge-agents` → appends the marker block to an existing unmarked `AGENTS.md`, preserving every original byte; re-running is `identical`, never duplicate-append. It does not rewrite an existing block.
 
-Skill discovery statement: `<projectRoot>/.agents/skills/knowledge-ops/SKILL.md` matches the DSH filesystem skill provider's project root (`<projectRoot>/.agents/skills`, direct `name/SKILL.md` bundle, frontmatter `name`/`description`). Path presence is not proof of loading: same-name shadowing or a disabled provider still prevent it (P-UNVERIFIED-2).
+Skill discovery statement: `<projectRoot>/.agents/skills/ake/SKILL.md` matches the DSH filesystem skill provider's project root (`<projectRoot>/.agents/skills`, direct `name/SKILL.md` bundle, frontmatter `name`/`description`). Path presence is not proof of loading: same-name shadowing or a disabled provider still prevent it (P-UNVERIFIED-2).
 
 ## 8. Verification levels (what the test report may claim)
 

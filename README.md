@@ -25,13 +25,33 @@ AKE gives that knowledge:
 
 ## Use AKE in a project (v0.1)
 
+### Install the Skill and initialize projects
+
+AKE itself requires Node.js >= 20; the current [Vercel Skills CLI](https://github.com/vercel-labs/skills) requires Node.js >= 22.20. From an AKE source checkout, after reviewing existing installations as described below:
+
 ```bash
-# from this repository (or any copy of it)
-node scripts/ake.mjs init --dir /path/to/your/project --dry-run   # review the plan first
+# Shared installation: choose the agents you actually use.
+npx skills add . --skill ake --global --agent codex --agent claude-code
+
+# From the AKE checkout, preview and initialize each Git project separately.
+node scripts/ake.mjs init --dir /path/to/your/project --dry-run
 node scripts/ake.mjs init --dir /path/to/your/project
+
+# Optional project-level Skill instead: run inside the target project.
+npx skills add /path/to/ake-checkout --skill ake --agent codex --agent claude-code
 ```
 
-`init` creates the knowledge directories, index pages, the Knowledge Ops Skill at `.agents/skills/knowledge-ops/SKILL.md`, and a self-contained CLI copy at `.ake/tools/scripts/ake.mjs`. It never overwrites an existing file; conflicts are reported and the command exits non-zero. `AGENTS.md` is created only when absent; if it already exists, AKE writes `.ake/AGENTS-fragment.md` for you to merge, or appends a marked block when you pass `--merge-agents`.
+`init` creates knowledge directories, configuration and a self-contained CLI at `.ake/tools/scripts/ake.mjs`; it does not install or inspect Skills. Each project's data stays in that project. Use the Skill's commands from the target project root, so the shared Skill invokes that project's CLI. `init` leaves differing existing files untouched and reports conflicts; it may still create other safe items. Existing `AGENTS.md` is preserved unless you explicitly request `--merge-agents`.
+
+Skills CLI 1.7.6 was tested on macOS with a temporary HOME and project: for the commands above it created a real canonical `.agents/skills/ake` directory and a Claude Code `.claude/skills/ake` symlink to it, both globally and in the project. This is not a symlink to the source checkout. Modes and fallback behavior may vary, especially on Windows; `--copy` requests independent copies. The [Skills agent table](https://github.com/vercel-labs/skills/blob/main/docs/agents.md) identifies Codex and Claude Code paths, not DSH as a target. DSH's filesystem provider can scan `.agents/skills` at project/user scope when enabled and configured accordingly; `DSH_AGENTS_HOME` and custom roots can differ. Installation alone does not prove an Agent loaded the Skill. Real Claude Code, Codex and Windows loading were not tested.
+
+### Updates and migration
+
+**Before running third-party install or update**, inspect and back up existing `ake` and `knowledge-ops` files, including project `.agents/skills/`, `.claude/skills/`, user `~/.agents/skills/`, `~/.claude/skills/`, flat `knowledge-ops.md`, and any configured DSH roots. Back up outside scanned Skill roots. Skills CLI is a separate tool: in the isolated macOS test, repeating `skills add` replaced a customized canonical `SKILL.md`; do not assume it preserves existing content or links. Manually merge your customizations and remove or move old entries only after reviewing them; otherwise differently named or project-level Skills may shadow or duplicate shared instructions. Neither `ake init` nor the migration hint modifies existing Skills.
+
+For a local checkout installation, update the checkout using your normal Git workflow, inspect changes and backups, then rerun the appropriate `npx skills add` command above. For a supported remote source, consult [Skills CLI update documentation](https://github.com/vercel-labs/skills/blob/main/docs/commands.md#skills-update); check scope and customizations before using `npx skills update -g ake` or `npx skills update -p ake`. The old `ake skill install --user` now prints a migration hint; `--skill-scope user` remains accepted by init, while `--skill-scope project` asks you to install separately.
+
+To upgrade each project's AKE CLI/config, run init with `--dry-run` from the updated source. Differing `.ake/tools`, config, index files or marker blocks are conflicts, not automatically upgraded; review, back up and manually merge or replace only the intended files, then rerun init. Knowledge and candidates remain project-specific.
 
 After init, run everything from inside the target project through the installed copy:
 
@@ -83,7 +103,7 @@ One fact has one authoritative home; related knowledge is linked with relative M
 
 | Command | Purpose |
 |---|---|
-| `ake init [--dir] [--dry-run] [--merge-agents]` | plan and install the knowledge layout |
+| `ake init [--dir] [--dry-run] [--merge-agents]` | plan and install the knowledge layout; Skill installation is separate |
 | `ake search <terms…> [--type] [--limit] [--include-candidates] [--json]` | keyword retrieval with coverage reporting |
 | `ake validate [--project] [--path] [--json]` | format, link, id and lifecycle checks |
 | `ake candidate new/submit/revise/list/show/check <id>` | candidate lifecycle and drift/similarity report |
@@ -108,7 +128,7 @@ Exit codes: `0` success, `1` validation/gate refusal (with the concrete reason),
 AGENTS.md            standing rules for developing AKE itself
 src/lib/*.mjs        reusable logic: parsing, validation, search, candidate lifecycle, publish, init
 scripts/ake.mjs      CLI entry
-skills/knowledge-ops/SKILL.md
+skills/ake/SKILL.md
 templates/project/   what `ake init` installs
 tests/               unit + isolation-project integration tests, fixtures
 docs/                architecture, test report, design review, reviews

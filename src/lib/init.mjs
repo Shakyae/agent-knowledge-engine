@@ -15,10 +15,9 @@ export async function initProject(dir,{dryRun=false,mergeAgents=false,source=pro
  const plan=[],conflicts=[];const add=(status,p,reason,from)=>{const item={status,path:p,...(reason?{reason}:{}),...(from?{source:from}:{})};plan.push(item);if(status==='conflict')conflicts.push(item);return item};
  async function planDir(rel){let target;try{target=await validateTarget(root,rel)}catch(e){add('conflict',rel,e.message);return}const info=await exists(target);if(info){if(info.isDirectory())add('skip',rel,'directory already exists');else add('conflict',rel,'expected directory');}else add('created',rel)}
  async function planFile(rel,from,data){let target;try{target=await validateTarget(root,rel)}catch(e){add('conflict',rel,e.message,from);return}let old;try{old=await readFile(target)}catch(e){if(e.code!=='ENOENT'){add('conflict',rel,`cannot read target: ${e.message}`,from);return}old=null}if(old){const info=await stat(target).catch(()=>null);if(!info?.isFile()){add('conflict',rel,'expected file',from);return}add(old.equals(data)?'identical':'conflict',rel,old.equals(data)?undefined:'different content; not overwritten',from)}else add('created',rel,undefined,from)}
- const templateRoot=path.join(source,'templates/project'),skillSource=path.join(source,'skills/knowledge-ops/SKILL.md');
+ const templateRoot=path.join(source,'templates/project');
  for(const d of directories)await planDir(d);
  for(const [from,to] of Object.entries(indexes))await planFile(to,path.join(templateRoot,from),await readFile(path.join(templateRoot,from)));
- await planFile('.agents/skills/knowledge-ops/SKILL.md',skillSource,await readFile(skillSource));
  const config=Buffer.from(JSON.stringify(defaultConfig,null,2)+'\n');await planFile('.ake/config.json','generated from config defaults',config);
  const agentsTemplate=await readFile(path.join(templateRoot,'AGENTS.md'),'utf8'),block=marked(agentsTemplate);let agentTarget;try{agentTarget=await validateTarget(root,'AGENTS.md')}catch(e){add('conflict','AGENTS.md',e.message);agentTarget=null}const a=agentTarget?await exists(agentTarget):null;
  if(agentTarget&&!a)add('created','AGENTS.md',undefined,path.join(templateRoot,'AGENTS.md'));

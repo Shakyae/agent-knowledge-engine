@@ -5,7 +5,7 @@ ake:
   status: active
   created: 2026-11-09
   scope: ["an agent doing a development task in a AKE-initialized project"]
-  evidence: ["docs/test-report.md", "skills/knowledge-ops/SKILL.md"]
+  evidence: ["docs/test-report.md", "skills/ake/SKILL.md"]
   verified: 2026-11-09
 ---
 
@@ -51,4 +51,4 @@ You are an agent starting a development task in a project that installed AKE, or
 ## Related
 
 - [Candidate lifecycle and hash-binding](../../.agents/notes/implemented/architecture/2026-11-09-hash-bound-publish-gate.md)
-- [Knowledge-Ops skill](../../skills/knowledge-ops/SKILL.md)
+- [AKE Skill](../../skills/ake/SKILL.md)

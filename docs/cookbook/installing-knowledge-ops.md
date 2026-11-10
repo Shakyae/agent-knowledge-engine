@@ -19,7 +19,8 @@ You want a Git project (new or existing) to gain the four knowledge directories,
 
 - Node.js >= 20 and Git available.
 - The target path is a valid Git working tree (a subdirectory of a repository is fine; linked worktrees are fine).
-- A copy of this repository, or an installed `.ake/tools/scripts/ake.mjs` from another initialized project.
+- A copy of this repository (installed project CLI copies are not init sources).
+- Install the Skill separately and review migration precautions in the [README](../../README.md#updates-and-migration); init does not install Skills.
 
 ## Steps
 
