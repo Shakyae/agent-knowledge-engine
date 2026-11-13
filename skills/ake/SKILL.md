@@ -1,6 +1,6 @@
 ---
 name: ake
-description: 在实现、架构、排障、部署、风险变更前检索工程知识，任务后按四类知识流程捕获、检查、审核并发布时使用。
+description: 在实现、架构、排障、部署、风险变更前检索工程知识；实质工程任务完成且用户确认验证通过后，评估是否按四类知识流程捕获、检查、审核，并等待用户授权后发布。
 ---
 
 # AKE knowledge operations
@@ -36,28 +36,40 @@ bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 
 - 搜索默认覆盖四类知识根：Agent Notes、Defensive Patterns、Postmortems、Cookbooks；结果须展示/说明类别标签。需要时使用 `--include-candidates`，并可用 `--type`/`--limit` 缩小结果。
 - 命中后只读查看相关文档；判断其 scope、status、verified、证据和当前代码是否仍适用，不把命中视为自动指令。最终报告指出检索词、命中文档/类别及适用性；没有命中只表示“未找到”，不表示知识不存在。
 
-## 任务后：选择四类之一
+## 任务后：判断是否值得沉淀
 - **Agent Note**：有可复用的设计/实现决策、重要取舍或变更依据。按生命周期写入 `.agents/notes/{proposed,implemented,rejected}/{class}/`。
 - **Defensive Pattern**：可重复的规则/防错检查，写入 `docs/defensive-patterns/`。
 - **Postmortem**：已发生的故障、影响、时间线、根因与护栏，写入 `docs/postmortem/`。
-- **Cookbook**：可重复的操作步骤及验证方式，写入 `docs/cookbook/`。
+- **Cookbook**：可复用的操作步骤及验证方式，写入 `docs/cookbook/`。
 
-只捕获有证据、可复用的结果，不为每个任务强行生成文档，不编造 scope、evidence、验证日期或解决状态。先搜索现有知识及候选，优先修订适当的既有目标；候选须含可追溯证据、scope 与验证条件。在创建/更新候选之前，先向用户通知「AKE · 准备沉淀为 <类别>：<简要主题>」，同阶段后续命令不重复通知。使用 `candidate new`/`candidate submit`，并用 `candidate check` 逐项核对文档格式、目标、链接、重复项、范围、证据、内容哈希与目标哈希；不通过就修正并重提。若没有新增知识，最终必须输出「AKE · 本次无新增知识」；若有未发布候选，在同一通知中简述候选 ID、未发布原因或等待的审核状态。
+只把有据、可复用的新知识写成候选。普通问答、琐碎改动、没有稳定经验或已被现有文档覆盖时，报告「AKE · 本次无新增知识」。若已发现可能有价值的新知识但核心证据不足，不要误报“无新增知识”：不创建候选，明确标注“潜在知识待补证据”，说明缺少什么以及如何验证。不得编造 scope、evidence、验证日期、会话/事件标识或解决状态。先搜索正式知识及候选，优先修订真正对应的现有目标。候选应对应实际有价值的结果，并用与核心主张相关的 A/B 级证据支持；可追溯证据可以是当前会话中可核对的直接观察，无需额外持久化产物或 ID。按主张选择合适验证；不得声称未执行的测试/检查已运行，也不要求每个候选都必须有实际测试。写明适用范围和验证条件。创建或更新前通知用户「AKE · 准备沉淀为 <类别>：<简要主题>」。使用 `candidate new` 或 `candidate revise`、`candidate submit` 和 `candidate check`；逐项核对格式、目标、链接、重复项、范围、证据、内容哈希和目标哈希。
 
-## 审核与本地自动发布
-- **Agent Teams**：优先由未参与候选生成、且适合该领域的独立 reviewer 检查。以真实 reviewer 名称运行 `review <id> --reviewer ... --verdict approve --notes ...`；不得伪装身份。通过后默认本地自动授权并发布，无需额外等待人工授权。
-- **Single Session / 无适合 reviewer**：明确通知用户这是作者自检而非独立审核。完成结构化自检（范围与证据、格式与链接、重复/影响、反例与验证结果、目标现状），用 `review <id> --self-review --verdict approve --notes "..."` 记录真实作者身份。随后默认本地自动授权并发布，不要求用户再选择自动模式。
-- 默认自动授权通过 `approve <id> --confirm`（可显式写 `--automatic`）记录 `mode: automatic`，不伪称人类授权。为兼容既有人工流程，只有用户明确要求人类授权时才使用 `approve <id> --by <human> --confirm`。
-- 任何模式都必须维持候选状态转换、完整 content/target/targetHash/operation 绑定、验证和目标漂移检测、发布账本及不确定结果的显式 reconcile。修改内容或发现漂移后必须修订并重新提交、重新审核/授权；禁止盲目重试、直写正式知识或绕过门禁。
-- 作者不得把自检描述成独立审核；独立性与身份无法由 AKE 验证。Skill/AGENTS 是软约束，普通文件工具可绕过，不是安全边界。
+## 独立审核与发布授权
+- **Agent Teams**：优先由未参与候选生成、且适合该领域的独立 reviewer 检查。以真实 reviewer 名称运行 `review <id> --reviewer ... --verdict <approve|request-changes|reject> --notes ...`；不得伪装身份。发出一次请求后，等待该 reviewer 的实际审核结果；派单成功、工具接受或沉默都不是审核完成。若当前轮次无法等待实际结果，暂停并如实告知用户/Lead，不自行假称已审核。
+- **Single Session**：有可用独立子代理时，交由未参与生成的 reviewer 审核并等待其实际结果；没有可用 reviewer 时，说明独立审核不可用并暂停，等待安排 reviewer。作者自检可作为补充记录，但不得声称独立，也不得替代所需的独立审核。
+- Reviewer 报告使用 `PASS`、`PASS WITH LIMITATIONS`、`BLOCK` 标签；现有 CLI verdict 保持 `approve|request-changes|reject`：`PASS` 映射 `approve`；`PASS WITH LIMITATIONS` 若核心主张有据且限制已明确写入候选，也映射 `approve`；若需先补充/明确限制，则映射 `request-changes`。`BLOCK` 按问题是否可修复映射 `request-changes` 或 `reject`。不要将新标签作为 CLI verdict。
+- 证据等级针对候选的核心主张，而非元数据完整度。**A（强直接证据）** = 与主张相关的源代码/差异、实际测试日志、可复现结果，或有意义的前后对比；不相关的代码或测试不能支撑该主张。**B（当前上下文中的可用证据）** = 与主张相关的当前运行/系统状态、实际浏览器检查、此 Session Agent 的直接验证、用户对其意图/验收的确认，或可读取的配置、安装脚本、系统状态。B 不要求持久化材料、独立证据文件、session/event ID，也不要求把会话内直接观察再包装成独立佐证；按主张判断关联性和局限。**C（核心证据缺失）** = 核心主张没有基本相关证据、证据与主张不匹配，或被现有证据反驳。A/B 可支持相关核心主张；C 对核心主张须标 `BLOCK`，并按可修复性映射 `request-changes`/`reject`。缺少 session ID、事件号、独立证据文件或不相关主题本身不降级证据等级，也不构成 BLOCK；不得为了满足字段制造证据。
+- 若潜在知识有价值但因 C 级证据不足不能形成候选，报告“潜在知识待补证据”及具体缺口/验证路径，不能说“无新增知识”。`AKE · 本次无新增知识` 仅用于确实没有新的、可复用结果。
+
+- 收到 `request-changes` 后最多自动修订一次，再交由独立 reviewer 实际复核一次；第二次仍未通过就暂停并报告，不循环。CLI 记录 verdict 时保留原有候选状态和绑定门禁。
+- Reviewer 通过后，向用户报告候选及限制并等待用户明确授权发布。不得默认自动授权，不得预先运行 `approve --confirm` 或 `publish`。收到明确授权后，使用现有 CLI `approve <id> --by <human> --confirm` 记录授权，再运行 `publish <id>`；`--by` 是声明，不是身份认证。用户未授权时保持未发布，并说明候选 ID、状态和等待原因。
+- 内容修改或观察到漂移后，必须按现有门禁重新提交并重新审核；发布仍须保留绑定校验、漂移检测、账本和 unknown-result reconcile。Skill/AGENTS 是软约束，普通文件工具可绕过，不是安全边界。
+- 合成回归例（不是已观察事实）：假设本 Session Agent 实际检查 Tampermonkey 目标页面的按钮文字与背景/边框、`::before`/`::after` 伪元素层叠、真实计算样式和下拉交互，且用户确认这些观察；其他页面/菜单主题未检查并已作为限制写明。此即时上下文证据属 B，不要求持久化截图、独立证据文件或 session/event ID；预期 `PASS WITH LIMITATIONS`，映射 CLI `approve`。不能仅因缺少标识/持久化文件或其他主题未验证而 BLOCK。若同一候选对这些核心主张实际没有基本证据（C），则应 `BLOCK`，按可修复性映射 `request-changes`/`reject`。此例为合成测试向量，不是实际浏览器检查或 Tampermonkey 行为验收。
+
+
+## 触发路由与连续执行能力边界
+- 按阶段应用触发并只执行当前阶段适用的步骤：任务前触发只做检索与适用性判断，不启动候选捕获；任务后触发先评估沉淀价值和证据。用户显式调用 `/ake` 时按其请求的阶段执行，不受自动完成语句条件限制。仅在任务后评估确认有据、可复用且未被覆盖的结果时，才继续查重、创建/修订候选和请求独立 reviewer；无价值则报告「AKE · 本次无新增知识」，证据不足则报告“潜在知识待补证据”，不得强制建候选。
+- 当前阶段的所有适用步骤一次连续执行，不要在检索、适用性判断、价值/证据评估、查重或合格候选的准备/提交/reviewer 请求之间额外询问“是否继续”。只在必须取得实际 reviewer 回复或用户发布授权时等待；无法等待 reviewer 的真实结果时如实报告，不伪造结果。现有 candidate/submit/review/approve/publish 权限、安全、验证和状态门槛不因连续执行而放宽。
+- 自动完成语句路由的条件仅适用于这一个额外的自动信号：此前确有实质工程任务（实现、调试、测试、架构或风险变更），本 Skill 已加载，且用户随后明确说「验证 ok」「测试通过」「没问题了」「验收通过」等。该条件不限制显式 `/ake` 调用或既有适用知识触发。普通问答、解释、无工程产出的对话不因完成语句路由自动进入候选流程；完成确认也不等于发布授权。
+- 以上消息判断是模型软约束，不是宿主硬触发。普通语言消息不能保证自动加载本 Skill；显式 `/ake` 可通过宿主机制注入，但不得声称 AKE 能观察所有消息或保证检测任意完成语句。无法确认 Skill 已加载时如实说明。
+
 
 ## 常用命令
 - `node .ake/tools/scripts/ake.mjs candidate new --kind <note|defensive-pattern|postmortem|cookbook> --title <title> --author <actual-name> --target <path> --body <file>`
 - `node .ake/tools/scripts/ake.mjs candidate submit <id>`
 - `node .ake/tools/scripts/ake.mjs candidate check <id>`
-- `node .ake/tools/scripts/ake.mjs review <id> --reviewer <actual-reviewer> --verdict approve --notes <evidence>` 或显式 `--self-review`
-- 默认本地自动授权：`node .ake/tools/scripts/ake.mjs approve <id> --confirm`，随后 `publish <id>`（`--automatic` 可显式注明）
-- 仅当用户要求人类授权时：`node .ake/tools/scripts/ake.mjs approve <id> --by <human> --confirm`
+- `node .ake/tools/scripts/ake.mjs review <id> --reviewer <actual-reviewer> --verdict <approve|request-changes|reject> --notes <evidence>`；CLI verdict 不接受 PASS 标签
+- 仅在用户明确授权发布后：`node .ake/tools/scripts/ake.mjs approve <id> --by <human> --confirm`，随后 `publish <id>`
 
 ## 用户可见最终报告
 任务结束时简要填写，不隐去未验证项：
@@ -65,9 +77,9 @@ bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 
 ```text
 AKE 知识流程
 - 检索：<关键词>；命中 <类别/文档及适用性>，或未找到
-- 沉淀：<Agent Note | Defensive Pattern | Postmortem | Cookbook + 标题/目标>，或说明无可复用结果
-- 检查/审核：<candidate check 结果；Team 独立 reviewer 或 Single Session 作者自检（明确非独立）>
-- 授权/发布：<automatic / 明确要求的 human / 未发布及原因；发布目标或候选状态>
+- 沉淀：<Agent Note | Defensive Pattern | Postmortem | Cookbook + 标题/目标>；若潜在知识待补证据，写明证据缺口/验证路径；仅确无可复用结果时写「AKE · 本次无新增知识」
+- 检查/审核：<candidate check 结果；独立 reviewer 实际结果，或独立审核不可用并暂停>
+- 授权/发布：<用户明确授权后发布，或未授权/未完成审核而保持未发布及原因；候选状态>
 - 验证：<实际运行的命令与结果>
 - 风险/未验证：<剩余事项>
 ```

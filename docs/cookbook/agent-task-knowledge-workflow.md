@@ -32,14 +32,11 @@ You are an agent starting a development task in a project that installed AKE, or
    Include evidence (test paths, commit ids) and the applicability scope in the document itself.
 7. **Submit and check it.**
    `node .ake/tools/scripts/ake.mjs candidate submit <id>` then `node .ake/tools/scripts/ake.mjs candidate check <id>`; resolve reported validation errors and read the similarity report before asking for review.
-8. **Review honestly.** In Agent Teams, use an eligible reviewer who did not create the candidate. In Single Session or without a suitable reviewer, perform a structured check and explicitly record author self-review; never call it independent.
-   `node .ake/tools/scripts/ake.mjs review <id> --reviewer "<name>" --verdict approve --notes "<what was checked>"`.
-   For self-review use `review <id> --self-review ...`; the CLI records the author as reviewer with `mode: self`, not as independent.
-9. **Use the default local automatic authorization.** After a current bound review, run `approve <id> --confirm`; this records automatic, not human, authorization. Use human authorization only when explicitly requested.
-   Default: `approve <id> --confirm`; explicit human authorization if required: `approve <id> --by "<human>" --confirm`.
-   `--confirm` is the CLI write confirmation; it is not an extra user authorization decision.
-10. **Publish through the gate.**
-    `node .ake/tools/scripts/ake.mjs publish <id>`; the CLI refuses if content, binding or target bytes drift. An unknown result requires explicit `--reconcile`; never blindly retry. Commit the result and keep the candidate record.
+8. **Obtain an actual independent review.** In Agent Teams, use an eligible reviewer who did not create the candidate and wait for its actual response; dispatch acceptance or silence is not a review. In a Single Session, use an available independent reviewer; if none is available, state that independent review is unavailable and pause rather than presenting author self-review as independent. The CLI keeps its verdicts `approve|request-changes|reject`; report labels map as follows: PASS → `approve`; PASS WITH LIMITATIONS → `approve` when the core claims are supported and limitations are already explicit in the candidate, otherwise `request-changes`; BLOCK → `request-changes` or `reject` according to fixability. Missing session IDs, event numbers, standalone evidence files, or unrelated topics alone do not justify BLOCK. After one requested change, allow at most one automatic revision and one independent re-review.
+   `node .ake/tools/scripts/ake.mjs review <id> --reviewer "<name>" --verdict <approve|request-changes|reject> --notes "<what was checked>"`.
+9. **Wait for user authorization.** After a passing review, summarize the candidate and any limitations and ask the user to explicitly authorize publication. Do not run `approve` or `publish` before that authorization. Once authorized, record it through the existing human authorization mode: `approve <id> --by "<human>" --confirm`.
+   `--by` is a declared identity, not a verified signature.
+10. **Publish through the gate.** Only after user authorization, run `node .ake/tools/scripts/ake.mjs publish <id>`; the CLI refuses if content, binding or target bytes drift. An unknown result requires explicit `--reconcile`; never blindly retry. Keep the candidate record. If you also want to create a Git commit, follow the repository's separate Git authorization rules; permission to publish knowledge does not itself authorize a commit.
 
 ## Verification
 
