@@ -1,6 +1,6 @@
 # Agent Knowledge Engine (AKE) — Architecture & v0.1 Contract
 
-Status: v0.1 baseline interface, amended by explicit user/Lead authorization for idempotent AGENTS trigger merging, visible Skill retrieval/capture notifications, four-kind CLI reporting, and self-review/default local automatic authorization modes. Earlier design reviews remain historical; see [design-review.md](design-review.md) and adjudications in `.agents/notes/implemented/process/`. The Skill is named `ake`, supports project and user scope, and installation remains a separate explicit operation; see [README installation and migration](../README.md#updates-and-migration).
+Status: v0.1 baseline interface, amended by explicit user/Lead authorization for idempotent AGENTS trigger merging, visible Skill retrieval/capture notifications, four-kind CLI reporting, self-review/default local automatic authorization modes, and offline Skill-distributed initialization resources. Earlier design reviews remain historical; see [design-review.md](design-review.md) and adjudications in `.agents/notes/implemented/process/`. The Skill is named `ake`, supports project and user scope, and installation remains a separate explicit operation; see [README installation and migration](../README.md#updates-and-migration).
 
 ## 1. Purpose and non-goals
 
@@ -22,6 +22,8 @@ package.json           # scripts: test, check; no runtime dependencies
 src/lib/*.mjs          # parsing, search, validation, candidate lifecycle, publish, init (ESM)
 scripts/ake.mjs        # CLI entry (imports ../src/lib/*.mjs)
 skills/ake/SKILL.md
+skills/ake/bootstrap.mjs + resources/ake-source/  # offline Skill-distributed init source
+scripts/sync-skill-bundle.mjs  # reproducible bundle generator/checker
 templates/project/     # installed into target projects by `ake init`
 tests/unit/ tests/integration/ tests/fixtures/
 docs/architecture.md docs/test-report.md docs/design-review.md docs/reviews/
@@ -182,7 +184,7 @@ Relative markdown links must resolve to an existing path inside the repo (error 
   "candidatesDir": ".ake/candidates", "publishLog": ".ake/publish-log.jsonl" }
 ```
 
-Every command resolves the project root as: explicit `--project <dir>` if given, else the nearest ancestor of CWD whose `.git` is a valid Git work tree (`git -C <dir> rev-parse --is-inside-work-tree` succeeds — this covers linked worktrees where `.git` is a file), else error `not a AKE project: no .git repository found`. Nested repositories resolve to the nearest one. Roots are repo-relative; resolved paths outside the project root are rejected.
+Project resolution sanitizes inherited `GIT_*` environment variables before Git probes. Without `--project`, determine the nearest valid Git work-tree root (including linked worktrees) and walk from CWD upward only through that root. Select the nearest ancestor with a complete, valid `.ake/config.json`. A present but malformed, incomplete, or unsafe `.ake` marker (including symlink/path escape) is an error; never skip it to use a parent AKE project. If no marker exists anywhere up to the Git root, retain the Git root with default configuration. A missing config at the Git root (including an empty root `.ake/` directory) also keeps the existing default-config fallback; an incomplete nested `.ake/` marker refuses parent fallback. Explicit `--project <dir>` is canonicalized and used exactly; it must be inside a valid Git work tree but is not redirected to an ancestor AKE project. If that exact directory has no config (including an absent `.ake/` or an empty `.ake/` created by earlier operations), existing default-config behavior is preserved; this keeps explicit `candidate new` → subsequent explicit command working without silently moving the project. A malformed or unsafe config/marker fails closed. Config retains `loadConfig`'s partial-configuration compatibility: omitted `version`, `knowledgeRoots`, `candidatesDir` or `publishLog` values inherit defaults, and `knowledgeRoots` may override only a subset. A present config must be a JSON object; supplied fields must have the expected types. Validate every effective path after merging, including inherited defaults on partial config and no-config fallback, so no default or custom root/candidate/log path can escape through `..` or symlinks. This supports AKE projects in subdirectories of an existing repository without creating a nested Git repository or silently operating on the parent project. Nested repositories resolve within the nearest Git work tree; roots are relative to the selected AKE project, not necessarily the Git root.
 
 ## 5. Retrieval (`ake search`)
 
@@ -265,6 +267,23 @@ Item set (templates contain knowledge index pages and the `AGENTS.md` block; the
 
 Skill discovery statement: `<projectRoot>/.agents/skills/ake/SKILL.md` matches the DSH filesystem skill provider's project root (`<projectRoot>/.agents/skills`, direct `name/SKILL.md` bundle, frontmatter `name`/`description`). Path presence is not proof of loading: same-name shadowing or a disabled provider still prevent it (P-UNVERIFIED-2).
 
+### 7.1 Offline initialization through the distributed Skill
+
+The Skill distribution at `skills/ake/` includes `bootstrap.mjs` and `resources/ake-source/`, a minimal, self-contained source tree containing the existing `scripts/ake.mjs`, all `src/lib/*.mjs`, the project templates, and package metadata (`name`, `version`, ESM type and Node engine). The bundle has no runtime dependencies and deliberately reuses the existing initializer; `src/lib/init.mjs` and the `ake init` contract are not forked or changed by this packaging.
+
+`scripts/sync-skill-bundle.mjs` deterministically copies those source inputs to the Skill resource tree. `node scripts/sync-skill-bundle.mjs --check` compares expected file bytes and the complete file list, reporting missing, differing and unexpected files. `npm run check` runs this consistency check. The checked-in Skill payload is therefore the offline resource users receive, rather than a pointer to the AKE checkout.
+
+`bootstrap.mjs` derives its resources from its own `import.meta.url`; it accepts only an absolute target path, so it does not use the invoking CWD to locate source assets or resolve the project. Its order and behavior:
+
+1. Resolve the explicit target and verify that Git confirms it is inside a non-bare working tree, using sanitized Git environment variables and `git rev-parse`; the target may be the work-tree root or a subdirectory inside a parent work tree. Keep initialization in the requested target; never move it to the parent root or run `git init`. Missing Git, bare repositories and unrecognized `rev-parse` errors fail closed without writes; only a recognized not-a-repository result directs the agent to ask the user to select or initialize a Git project.
+2. If both `.ake/config.json` and `.ake/tools/scripts/ake.mjs` are regular files, do not reinitialize or upgrade. Safely read the config `version` and bundled package metadata to report a detected mismatch; do not execute the project CLI. If metadata is absent/invalid or versions match, explicitly state that the installed CLI version cannot be determined from config alone. Before any write with an old/unknown CLI, the Skill asks the user to run its read-only `status --json` and verify the returned project path equals the intended target; the agent must not execute it automatically or write before this check. If the root is wrong, guide backup and manual review/migration against the official source; never auto-copy or overwrite.
+3. Otherwise verify the required offline files. If any are missing, report each absolute missing path and README recovery instructions without writing the project.
+4. Run the bundled original `ake init --dry-run --json` and display its plan. A conflict found by that preview stops before apply. `--dry-run` stops after displaying the plan; normal apply invokes the same initializer after a conflict-free preview.
+
+Preview then apply is neither atomic nor TOCTOU-safe. A concurrent change after preview can cause the core initializer to observe different plan outcomes and make mixed writes; use a single writer. The zero-write conflict statement applies only when the preview itself detects the conflict, not when files race between preview and apply. The core `init` contract otherwise remains unchanged, including acceptance of target subdirectories inside an existing work tree.
+
+The Skill instructions ask the agent to resolve the Skill base directory from the loader context, require an absolute target, and ask the user before proceeding when the target is not Git. The ask is a prompt-level soft rule: automated tests can demonstrate script refusal and zero writes, but cannot prove that an agent asks or complies. Isolated bootstrap tests copy only `skills/ake/` into a temporary location and exercise real Git repositories from a different CWD, including Unicode/space paths, parent repository subdirectories, linked worktrees, Git environment contamination, missing resources, conflicts, existing project version preservation and the copied project CLI. They do not by themselves verify that a third-party Skill installer ships every file or that a real agent loads/obeys the Skill.
+
 ## 8. Verification levels (what the test report may claim)
 
 `docs/test-report.md` must separate:
@@ -294,3 +313,5 @@ Boundary claims to be cited with actual results, never as design assertions:
 5. Format gate rejects each of: missing required frontmatter (dp/cookbook), note header/folder mismatch, missing mandatory section, dangling relative link, duplicate id, malformed marker block.
 6. Evolution scenario: a candidate that partially supersedes an existing note reports the overlap and names the existing document as the update target instead of proposing a parallel duplicate.
 7. CLI copied into the target (`.ake/tools/scripts/ake.mjs`) runs `search`/`validate` from a different CWD in that target with no AKE-repo dependency, in a target whose `package.json` is absent or CommonJS.
+8. A copy of only `skills/ake/` can bootstrap a fresh Git root or project subdirectory inside an existing work tree from another CWD with the offline payload; it refuses invalid Git targets without writes, shows a preview before apply, stops on preview conflicts, preserves an existing config+CLI while reporting version comparison limits, and reports exact missing resources. Bundle generation/check is reproducible and included in `npm run check`; prompt-level user questioning and third-party installer copying/loading remain distinct, unverified behaviors unless separately observed.
+9. In a parent Git repo containing multiple AKE projects, implicit CLI resolution chooses the nearest valid project marker; malformed or escaping markers fail rather than fall through. Explicit `--project` selects its exact directory, including default-config behavior when unmarked. `status`, `search` and candidate writes are tested from a different CWD; no-config Git-root compatibility remains covered.

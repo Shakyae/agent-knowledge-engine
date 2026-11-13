@@ -5,7 +5,29 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
 
 # AKE knowledge operations
 
-在已初始化的目标项目根目录执行 `.ake/tools/scripts/ake.mjs`。`ake init` 不安装 Skill；安装后此 Skill 应在相关任务中可见。未初始化时先按 AKE README 从源码运行 `ake init`，不要在其他项目中执行这些命令。
+先确定目标项目的绝对路径，并使用 Skill 加载器提供的 **本 Skill base directory** 绝对路径；不得从当前工作目录、目标项目或 AKE 源码 checkout 推导 Skill 路径。若加载环境未提供该绝对路径，先请用户提供/确认已安装 Skill 的位置，不要猜路径。
+
+## 项目初始化（按需）
+
+首次检查用下面的 `bootstrap.mjs --dry-run` 对目标做只读预检；不要把继承 `GIT_*` 环境的普通 shell `git` 结果当作授权依据。Bootstrap 清理全部 `GIT_*` 环境变量后再检查：目标可以是独立 Git 工作树根目录，也可以是已有父级工作树中的项目子目录；它只在用户给定的确切目录初始化，不向上迁移、不创建嵌套 Git 仓库，也不运行 `git init`。若结果明确为非 Git 工作树，询问用户是否先选择/初始化 Git 项目；只有用户确认且目录已由用户建立为有效工作树后才重试。缺少 Git、bare 仓库或其他 Git 检查错误时，不得推测可新建，停止并报告原因。检查失败时零写。
+
+如果目标中 `.ake/config.json` 与 `.ake/tools/scripts/ake.mjs` 都是现有文件，视为已初始化：不要重复运行 bootstrap、不要复制或升级配置/CLI。bootstrap 仅安全读取 config 版本与随附 bundle 的 package 元数据并报告是否不同；它不会执行项目 CLI，且不能由 config 版本证明 CLI 本身的版本。无法判断时明确报告未知。旧版或版本未知的项目 CLI 在任何写操作前，要求用户自行运行只读 `node <绝对目标路径>/.ake/tools/scripts/ake.mjs status --json`，确认返回的 `project` 精确等于目标绝对路径；Agent 不自动执行现有项目 CLI，也不在未确认前执行写命令。若项目根错误，先备份并让用户人工审阅当前官方 AKE 版本的迁移/合并方案；不要自动复制、升级或覆盖项目 CLI、配置、知识文件。确认后才可使用该项目自己的 CLI。
+
+若缺任一文件，使用本 Skill 随附的离线资源执行器，不依赖 AKE 源码 checkout 或调用时的工作目录。先展示计划：
+
+```bash
+node <本 Skill base directory 的绝对路径>/bootstrap.mjs --dir <绝对目标路径> --dry-run
+```
+
+dry-run 若报告任何 `conflict`，停止并报告冲突路径；不要应用部分计划。无冲突后再应用：
+
+```bash
+node <本 Skill base directory 的绝对路径>/bootstrap.mjs --dir <绝对目标路径>
+```
+
+bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 初始化器。若资源不完整，它会列出确切缺失文件且不写项目文件；按 README 中的官方 Skill 安装说明从 AKE 源码 checkout 恢复/更新 Skill，再重试。初始化不安装任何全局 Skill，也不升级已有项目 CLI。
+
+程序可测试的行为包括 Git 根校验、dry-run、冲突拒绝、离线初始化和既有 CLI/config 保留；“非 Git 时询问用户”是本 Skill 对 Agent 的软指令，不能由脚本或自动化测试证明真实 Agent 会遵循。不要把提示规则描述成安全边界。
 
 ## 任务前：用户可见通知与按需检索
 - 当任务首次进入 AKE 触发阶段（相关工程知识检索或任务后沉淀）时，在首个 AKE CLI 操作前给用户一条简短通知；同一阶段连续进行的多次搜索/候选命令合并在这条通知中，不逐条重复通知。
