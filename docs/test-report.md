@@ -128,7 +128,9 @@ Recorded because v0.1 is only worth trusting if its defects are visible.
 | 12 | Document diagnostics reported body-relative line numbers | reviewer | yes — file line numbers, asserted at line 13 of a 9-line-frontmatter document |
 | 13 | Truncated search printed the "no matching knowledge" message while matches existed | reviewer | yes — truncated-empty prints `No results displayed … matches may exist`; genuine zero-hit keeps the fixed wording |
 
-## Boundary claims (cite these instead of describing the workflow as enforcement)
+## Boundary claims (historical v0.1 baseline; see dated amendment below for current CLI behavior)
+
+The observations immediately below describe the earlier implementation/review scope. They do not override the 2026-11-13 amendment supplement, which updates supported review and authorization modes while keeping identity claims explicitly unverified.
 
 - **P-PROMPT-1 — prompt-level.** `AGENTS.md`, the installed skill and `templates/project/AGENTS.md` request pre-task retrieval, in-place capture, independent review, explicit human authorization and one publisher. In the single real-session observation the agent followed them; the CLI cannot make an agent comply, and the rules can be truncated or ignored.
 - **P-PROMPT-2 — prompt-level.** A direct edit of a formal knowledge file succeeds: in Test D a `printf` append to the published target succeeded outside the CLI, and the CLI later refused to publish over it but could not prevent the write. The author's `publish --dry-run` also succeeded, proving caller identity is not checked. Published knowledge text must not be treated as high-priority instructions.
@@ -171,3 +173,14 @@ node scripts/ake.mjs status
 ```
 
 The real-session and real-team runs used gitignored `.ake-tmp/` projects; the commands and outputs are recorded above and in [review-1.md](reviews/review-1.md) / [review-2.md](reviews/review-2.md). Temporary projects are disposable by design — recreate them with `ake init`.
+
+## Authorized workflow amendments — 2026-11-13
+
+The following is a new automated-test supplement; it does not change the historical real DSH observations or establish new real Team/Single-Session behavior.
+
+- `npm run check` (Node 26.13.0, macOS) passed: 72 unit/integration tests; repository validation reported 0 errors, 0 warnings. `git diff --check` passed.
+- Isolation-project CLI coverage exercises byte-preserving/idempotent merge of existing unmarked `AGENTS.md`, malformed/mismatched marker conflict, visible separate-Skill notice, and an escaping symlink during actual apply (outside target remains untouched).
+- CLI coverage exercises default automatic authorization after eligible Team-style independent review, explicit author self-review, optional legacy human approval, empty/invalid reviewer rejection, legacy no-`mode` independent records, automatic self-review target-binding drift, invalid document and duplicate ID refusals, and automatic self-review `--reconcile` after a simulated ledger failure.
+- Human-readable search/candidate/review/approval/publish outputs include the applicable one of four category labels. `candidate list --json` preserves its legacy `candidates: string[]` and adds categorized `summaries`. Skill tests confirm visible/coalesced retrieval and capture notices and the structured final-report template.
+- CLI publication verified historical supersession updates for the conservative-init and hash-bound-publish Agent Notes through independent review and automatic approval; see candidates C-0001 and C-0002 (both published).
+- These tests establish CLI behavior only. They do not establish that a Team finds a qualified independent reviewer, that a real single-session structured self-check is performed, or that the relevant Skill is loaded. Those remain unverified; self/approver/reviewer identity remains an unverified declaration.

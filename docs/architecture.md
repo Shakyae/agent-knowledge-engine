@@ -1,6 +1,6 @@
 # Agent Knowledge Engine (AKE) — Architecture & v0.1 Contract
 
-Status: v0.1 **frozen** interface, amended after independent design review (see [design-review.md](design-review.md) and the adjudications recorded in `.agents/notes/implemented/process/`). User-requested amendment: the Skill is named `ake`, supports project and user scope, and user installation is a separate explicit operation; see [README installation and migration](../README.md#updates-and-migration). Other deviations must be proposed to the Lead before coding.
+Status: v0.1 baseline interface, amended by explicit user/Lead authorization for idempotent AGENTS trigger merging, visible Skill retrieval/capture notifications, four-kind CLI reporting, and self-review/default local automatic authorization modes. Earlier design reviews remain historical; see [design-review.md](design-review.md) and adjudications in `.agents/notes/implemented/process/`. The Skill is named `ake`, supports project and user scope, and installation remains a separate explicit operation; see [README installation and migration](../README.md#updates-and-migration).
 
 ## 1. Purpose and non-goals
 
@@ -8,7 +8,7 @@ AKE makes a **project's engineering knowledge** discoverable, reusable, capturab
 
 v0.1 delivers: a project knowledge layout compatible with the official DSH knowledge conventions, one `ake` Skill, one small dependency-free Node CLI, a conservative project initializer, and automated + isolation-project tests.
 
-Explicit non-goals (do not build in v0.1): DSH runtime plugin, MCP server, vector index, background memory service, web UI, approval server, automatic publishing without a human authorization record, cross-repo sync, bilingual note triplets, the `archived/` tree, `##`-section semantic judgement.
+Explicit non-goals (do not build in v0.1): DSH runtime plugin, MCP server, vector index, background memory service, web UI, approval server, publishing outside an explicit CLI operation or without a bound authorization record, cross-repo sync, bilingual note triplets, the `archived/` tree, `##`-section semantic judgement.
 
 **Boundary statement (authoritative; must appear in README and test report):**
 AKE is a *process and tooling* layer, not a security boundary. On a shared `workspace-write` filesystem any agent can edit formal knowledge files directly with ordinary file/shell tools. Skill/AGENTS rules are soft constraints. `ake` enforces ordering, hashing, format and observed-drift checks only over paths it writes; it cannot prevent bypass, and it cannot verify that `--reviewer`/`--by` identities are real or independent. Never describe approval as mandatory security enforcement. See §5 boundary claims (P-PROMPT / P-CHECK / P-UNVERIFIED).
@@ -48,7 +48,7 @@ Own repo dogfoods AKE: `.agents/notes/`, `docs/defensive-patterns/`, `docs/cookb
 └── AGENTS.md                # created when absent; never silently modified when present
 ```
 
-`ake init` never overwrites an existing file, never deletes, never edits `AGENTS.md` without an explicit flag.
+`ake init` never overwrites a differing existing file or deletes files. It appends the trigger block to an existing unmarked `AGENTS.md` by default, preserving its original bytes; marked conflicts are not modified.
 
 ## 4. Knowledge document kinds and machine-checkable adaptation
 
@@ -214,23 +214,23 @@ akeCandidate:
   operation: create | update
   targetHash: "<sha256 of raw target bytes>" | "absent"
   contentHash: "<sha256 of body bytes as stored>"
-  reviews: [{ reviewer, verdict, contentHash, target, targetHash, operation, at, notes }]
-  approval: null | { by, at, contentHash, target, targetHash, operation }
+  reviews: [{ reviewer, mode: independent | self, verdict, contentHash, target, targetHash, operation, at, notes }]
+  approval: null | { by, mode: automatic | human, at, contentHash, target, targetHash, operation }
   publication: null | { at, contentHash, target, previousTargetHash }
   supersededBy: null | C-0002
 ---
 <!-- body: the exact markdown file that will be published, including any frontmatter -->
 ```
 
-Binding set = `{contentHash, target, targetHash, operation}`. `contentHash` = SHA-256 of the exact body bytes the CLI stores and will write (CLI normalizes EOL to LF once at store time and records that fact). `targetHash` = SHA-256 of the raw target file bytes; the sentinel `"absent"` represents a missing target (never the hash of an empty file).
+Binding set = `{contentHash, target, targetHash, operation}`. `contentHash` = SHA-256 of the exact body bytes the CLI stores and will write (CLI normalizes EOL to LF once at store time and records that fact). `targetHash` = SHA-256 of the raw target file bytes; the sentinel `"absent"` represents a missing target (never the hash of an empty file). Human-readable search, candidate, review, approval and publish results display one of the four category labels: Agent Note, Defensive Pattern, Postmortem, or Cookbook; structured candidate results include `kind` and `category`. For `candidate list --json`, retain the legacy `candidates: string[]` field and add `summaries` with category metadata.
 
 Semantics:
 
 1. `candidate new` → `draft` with `operation` derived from `target` existence (create/update). `candidate submit` → `submitted`; requires: non-empty body; body passes the full document gate for its `kind` (except that target/lifecycle legality is checked separately); target is inside the configured root for `kind` and legal for the kind (notes: lifecycle folder must match body `Status:` after publish, and class must be in the closed set).
 2. `candidate revise <id> --body <file>` → new draft revision of the same candidate id: appends the old revision record to `.ake/candidates/<id>.revisions/`? **No** — v0.1 keeps history simple: it increments `revision`, resets state to `draft`, clears `reviews`/`approval` (they were bound to the old bytes) and keeps one file. If a candidate was already `published`, revising it is refused — publish a new candidate instead.
-3. `review --reviewer R --verdict approve|request-changes|reject` — requires `submitted`/`reviewed`; `R` must differ from `author` (else exit 1 `a candidate author cannot review its own candidate`); records `{reviewer, verdict, contentHash, target, targetHash, operation, at, notes}`; a non-empty `notes` or evidence reference is required for `approve` and `reject`. Status recompute: any `approve` bound to the current binding set → `reviewed`; latest bound verdict `reject` → `rejected` (reason required); `request-changes` stays `submitted`. Entries bound to a stale binding set are reported as stale and ignored.
-4. `approve --by <human> [--confirm]` — requires `reviewed`; records `{by, at, contentHash, target, targetHash, operation}`. `--by` is a declaration, not a verified human signature. Without `--confirm`, print what would be authorized and write nothing.
-5. `publish [--dry-run]` fail-closed requires ALL of: status `approved`; approval bound to the current binding set; >=1 approve review bound to the current binding set with reviewer ≠ author; recomputed body hash equal to stored `contentHash`; target inside a configured root and legal for the kind; target hash equal to `targetHash` (missing target when `"absent"`, or existing content when a hash) — any drift refuses with `target changed since candidate creation; re-review required`; body passes full document validation; resulting document id does not collide with an existing document id; no unresolved conflict reported by `candidate check`. On success: write the body with a temp file + `rename` (atomic within the directory), re-read and verify the written hash, set `published` + `publication`, append one JSON line to `.ake/publish-log.jsonl` `{at, id, revision, target, contentHash, previousTargetHash}`. The CLI never runs `git commit`; the publisher decides.
+3. `review --reviewer R --verdict approve|request-changes|reject` is independent mode: requires `submitted`/`reviewed`, `R !== author`, and records `{reviewer, mode: independent, verdict, contentHash, target, targetHash, operation, at, notes}`. Explicit `review --self-review` uses the actual candidate author as reviewer and records `mode: self`; it never claims independence. Both modes require non-empty notes for approve/reject, preserve status transitions and full binding, and reject stale content. Any current `approve` → `reviewed`; latest bound `reject` → `rejected`; `request-changes` stays `submitted`.
+4. `approve <id> --confirm` defaults to local automatic authorization after a current bound approve review (independent Team review, or explicit self-review when no suitable reviewer is available); records `{by: automatic-local-workflow, mode: automatic, ...binding}`. `--automatic` may make the mode explicit. For backward compatibility, `approve --by <human> --confirm` selects human authorization and requires an independent approve review. `--by` is a declaration, not a verified signature. Without `--confirm`, no mode writes anything.
+5. `publish [--dry-run]` fail-closed requires ALL of: status `approved`; approval bound to the current binding set; >=1 current approve review compatible with authorization mode (independent records require a non-empty reviewer ≠ author; legacy records without `mode` count as independent; automatic self-review requires `mode: self` and reviewer === author); recomputed body hash equal to stored `contentHash`; target inside a configured root and legal for the kind; target hash equal to `targetHash` (missing target when `"absent"`, or existing content when a hash) — any drift refuses with `target changed since candidate creation; re-review required`; body passes full document validation; resulting document id does not collide with an existing document id; no unresolved conflict reported by `candidate check`. On success: write the body with a temp file + `rename` (atomic within the directory), re-read and verify the written hash, set `published` + `publication`, append one JSON line to `.ake/publish-log.jsonl` `{at, id, revision, target, contentHash, previousTargetHash}`. The CLI never runs `git commit`; the publisher decides.
 6. Crash window: before the atomic write the CLI persists an in-flight marker (`pendingPublication: {at, contentHash, previousTargetHash}`) in the candidate record. If the target write succeeds but the state/log update then fails, the command exits 1 with `publish result unknown: target written, ledger not updated; reconcile manually` and leaves the marker in place. Never auto-replay, never overwrite the target to "retry". Any later plain `publish` refuses while the marker exists, including the case where the target bytes happen to equal the stored `targetHash` (a bytes-identical update makes drift undetectable). Recovery is explicit: `publish <id> --reconcile` completes the ledger only when the target's current bytes hash equals the candidate `contentHash`; otherwise it refuses and keeps the marker.
 7. No multi-file transaction and no TOCTOU-free exclusivity is claimed: hash re-checks immediately before rename detect *observed* drift, but a writer that changes the target after the check is not prevented. A single designated publisher is a collaboration convention (§1 boundary statement).
 8. `candidate check <id>` reports: body validation errors, binding drift (content/target/operation), stale vs bound reviews, id collision, and an advisory similarity report (same normalized title or >= 60% token overlap with an existing doc). Advisory only; publishing still requires the gate in (5).
@@ -243,12 +243,12 @@ Plan first, then apply. Each item gets exactly one outcome:
 
 - `created` — absent and safe; written.
 - `identical` — exists, byte-identical; not rewritten.
-- `skip` — intentionally not processed (e.g. a directory already present, `AGENTS.md` present without `--merge-agents`); reason reported.
+- `skip` — intentionally not processed (e.g. a directory already present); reason reported.
 - `conflict` — exists with different bytes, wrong type, unreadable or unsafe to write; left untouched, reported with path and source.
 
-Exit 1 if any conflict; 0 otherwise. Mixed outcomes still create safe missing items. `--dry-run` prints the plan only. Never overwrite, merge, upgrade, delete, auto-commit, or modify `package.json`; never write outside the project root; refuse paths that resolve through symlinks escaping the root.
+Exit 1 if any conflict; 0 otherwise. Mixed outcomes still create safe missing items. `--dry-run` prints the plan only. Never overwrite differing files, upgrade, delete, auto-commit, or modify `package.json`; the only merge is the specified append to an existing unmarked `AGENTS.md`. Never write outside the project root; refuse paths that resolve through symlinks escaping the root.
 
-Item set (templates contain knowledge index pages and the `AGENTS.md` block; the config is generated from code). Skill installation is separate and uses `skills/ake/` as its source:
+Item set (templates contain knowledge index pages and the `AGENTS.md` block; the config is generated from code). Skill installation is separate and uses `skills/ake/` as its source. Every init result carries a user-visible `skillNotice` that the Skill must be installed separately and is used for triggered retrieval/capture; it does not imply the Skill was installed or loaded:
 
 - four knowledge roots with the templates' index READMEs;
 - `.ake/config.json`, generated from the code's defaults (not a template copy);
@@ -259,9 +259,9 @@ Item set (templates contain knowledge index pages and the `AGENTS.md` block; the
 `AGENTS.md`:
 - absent → `created` from the template, whose content is wrapped in `<!-- ake:begin -->`…`<!-- ake:end -->` so a later explicit merge is well-defined.
 - present and contains exactly one complete matching marker block → `identical`.
-- present without markers → `skip`, never modified; `.ake/AGENTS-fragment.md` is written (`created`/`identical`) so the user can merge manually; the path is reported.
+- present without markers → append marker block by default, preserving every original byte; `.ake/AGENTS-fragment.md` is written too. Re-running is `identical`, never duplicate-append.
 - present with malformed/unpaired/duplicate markers → `conflict`, unmodified.
-- `--merge-agents` → appends the marker block to an existing unmarked `AGENTS.md`, preserving every original byte; re-running is `identical`, never duplicate-append. It does not rewrite an existing block.
+- `--merge-agents` remains accepted for compatibility; merging is the default. Complete but differing blocks also conflict and are never overwritten.
 
 Skill discovery statement: `<projectRoot>/.agents/skills/ake/SKILL.md` matches the DSH filesystem skill provider's project root (`<projectRoot>/.agents/skills`, direct `name/SKILL.md` bundle, frontmatter `name`/`description`). Path presence is not proof of loading: same-name shadowing or a disabled provider still prevent it (P-UNVERIFIED-2).
 
@@ -276,11 +276,11 @@ Skill discovery statement: `<projectRoot>/.agents/skills/ake/SKILL.md` matches t
 
 Boundary claims to be cited with actual results, never as design assertions:
 
-- **P-PROMPT-1** (prompt rule): AGENTS/Skill ask for pre-task retrieval, candidate capture, independent review, explicit human authorization, single-publisher serialization. Soft; may be unloaded, truncated or ignored.
+- **P-PROMPT-1** (prompt rule): AGENTS/Skill ask for relevant pre-task retrieval, candidate capture, appropriate Team review or explicit self-review, deliberately chosen human/automatic authorization mode, and single-publisher serialization. Soft; may be unloaded, truncated or ignored.
 - **P-PROMPT-2** (prompt rule): in a shared `workspace-write` workspace, ordinary write/edit/shell can still edit formal knowledge directly; "single publisher" is a convention, not a lock; published knowledge text must not be treated as high-priority instructions.
-- **P-CHECK-1** (program-checkable): for operations that go through the CLI, structure, record completeness, declared-role inequality, state, authorization scope and bound hashes are checked; failures are refused per §6.
+- **P-CHECK-1** (program-checkable): for operations that go through the CLI, structure, record completeness, selected review/authorization mode, state and bound hashes are checked; declared identities are not authenticated; failures are refused per §6.
 - **P-CHECK-2** (program-checkable): paths, target snapshots, observed concurrent change and init conflicts are checked; no exclusivity against writes that happen after the check, no multi-file transaction, no other write entry point.
-- **P-UNVERIFIED-1** (unverified assumption): recorded reviewer/approver identifiers correspond to different, qualified, non-generating real humans. The CLI offers no trusted identity verification.
+- **P-UNVERIFIED-1** (unverified assumption): reviewer/approver declarations correspond to real, qualified, independent people. Automatic authorization is only a mode declaration; no identity or human intent is verified by the CLI.
 - **P-UNVERIFIED-2** (unverified assumption): the current DSH profile enables the filesystem skill provider and the installed project skill is loaded, not shadowed.
 - **P-UNVERIFIED-3** (unverified assumption): real-task retrieval recall, applicability judgement, adherence rate, redaction, cost and cross-task reuse are acceptable.
 - **P-UNVERIFIED-4** (unverified assumption): target Node versions, package boundaries, platforms, Git worktrees and crash recovery behave as designed.
@@ -288,9 +288,9 @@ Boundary claims to be cited with actual results, never as design assertions:
 ## 9. Acceptance criteria for v0.1
 
 1. `npm test` green from a clean checkout; `node scripts/ake.mjs validate --project .` green on this repo.
-2. Fresh temp Git project: `ake init` creates the layout, installs the skill and `.ake/tools`, creates `AGENTS.md` once, and a second run reports all `identical`/`skip` and writes nothing.
-3. `ake init` on a project with a pre-existing `AGENTS.md` and knowledge directories reports `skip`/`conflict`, changes nothing, and exits 1 when conflicts exist.
-4. In an initialized project: draft → submit → revise (invalidating old approvals) → review by a different identity → approve by a human declaration → publish; and publish refusals for: no approval, self-review, stale binding, target drift, id collision, illegal kind/target path, invalid document.
+2. Fresh temp Git project: `ake init` creates the layout and `.ake/tools`, creates `AGENTS.md` once, visibly reminds that Skill installation is separate, and a second run reports `identical`/`skip` and writes nothing.
+3. `ake init` preserves existing unmarked `AGENTS.md` bytes while adding one trigger block idempotently; mismatched/malformed marked blocks conflict without overwrite; other conflicting files remain untouched and cause exit 1.
+4. In an initialized project: independent Team review and explicit Single Session self-review each complete through default automatic authorization and the same bound publish gate; legacy human approval remains compatible. Publish refuses missing/incompatible review or approval, stale binding, target drift, id collision, illegal kind/target path and invalid document.
 5. Format gate rejects each of: missing required frontmatter (dp/cookbook), note header/folder mismatch, missing mandatory section, dangling relative link, duplicate id, malformed marker block.
 6. Evolution scenario: a candidate that partially supersedes an existing note reports the overlap and names the existing document as the update target instead of proposing a parallel duplicate.
 7. CLI copied into the target (`.ake/tools/scripts/ake.mjs`) runs `search`/`validate` from a different CWD in that target with no AKE-repo dependency, in a target whose `package.json` is absent or CommonJS.

@@ -28,7 +28,7 @@ You want a Git project (new or existing) to gain the four knowledge directories,
    `node scripts/ake.mjs init --dir <target> --dry-run`
 2. Read the plan: every item is reported as `created`, `identical`, `skip` or `conflict`, each with a path. Stop and reconcile any `conflict` before continuing.
 3. Apply the plan: `node scripts/ake.mjs init --dir <target>`
-4. If the target already had an `AGENTS.md`, the command leaves it untouched: merge `.ake/AGENTS-fragment.md` by hand. Only pass `--merge-agents` when you want the marked block appended automatically.
+4. For an existing unmarked `AGENTS.md`, init appends the marked block by default while preserving original bytes; review the planned changes. Differing or malformed existing marker blocks conflict without overwrite. `.ake/AGENTS-fragment.md` is also provided. `--merge-agents` remains accepted for compatibility.
 5. Commit the installation in the target project: `git add .agents docs .ake AGENTS.md && git commit`.
 6. Confirm the gate works in the target: `node .ake/tools/scripts/ake.mjs validate` and `node .ake/tools/scripts/ake.mjs search "any known topic"`.
 

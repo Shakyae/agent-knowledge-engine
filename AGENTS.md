@@ -4,7 +4,7 @@ This repository develops **AKE itself**. For the file a *target* project receive
 
 ## Contract first
 
-- `docs/architecture.md` is the frozen v0.1 interface (CLI surface, file formats, gates, verification levels). Propose a change to the Lead before deviating; do not silently widen scope.
+- `docs/architecture.md` is the authoritative current v0.1 interface (CLI surface, file formats, gates, verification levels), including explicitly authorized amendments. Propose other changes to the Lead before deviating; do not silently widen scope.
 - v0.1 is Markdown + Git + a dependency-free Node CLI. No plugin, MCP server, vector store, background service, web UI or third-party dependency.
 - Node >= 20, ESM only, `node:test`, cross-platform paths, LF newlines.
 
@@ -16,9 +16,9 @@ This repository develops **AKE itself**. For the file a *target* project receive
 
 ## Knowledge workflow (dogfooding)
 
-Before changing code here, retrieve relevant knowledge from `.agents/notes/`, `docs/defensive-patterns/`, `docs/postmortem/`, `docs/cookbook/` with `node scripts/ake.mjs search <terms>`, then read only the hits whose `scope`/`verified` still apply.
+Before the first related AKE CLI action, give one concise user notice for the stage; coalesce consecutive calls. In Agent Teams the Lead/owner sends a unified notice and members report to the Lead without duplicate user notices. Search `.agents/notes/`, `docs/defensive-patterns/`, `docs/postmortem/`, `docs/cookbook/` with `node scripts/ake.mjs search <terms>`, then read only hits whose `scope`/`verified` still apply and report category/applicability.
 
-After finishing a task, check whether durable, evidence-backed knowledge emerged. Prefer updating an existing authoritative document over creating a parallel one. Candidates live in `.ake/candidates/`; formal knowledge is only ever promoted through `review` → human `approve` → `publish`, and never silently rewritten.
+After finishing a task, visibly report whether a durable result maps to Agent Note, Defensive Pattern, Postmortem or Cookbook; if none, say `AKE · 本次无新增知识`. Disclose pending candidate IDs and why they remain unpublished. Prefer updating an existing authoritative document over creating a parallel one. Candidates live in `.ake/candidates/`; promote through bound review (independent Team reviewer or explicitly recorded author self-review), default local automatic approval and publish gates, without pretending self-review is independent or silently rewriting formal knowledge.
 
 ## Working rules
 

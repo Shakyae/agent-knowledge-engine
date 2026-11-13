@@ -6,6 +6,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),cli=path.join(root,'scripts/ake.mjs');
+test('AKE Skill instructs visible retrieval/capture and structured final report',async()=>{const skill=await readFile(path.join(root,'skills/ake/SKILL.md'),'utf8');for(const phrase of ['用户可见通知','同一阶段连续进行的多次搜索/候选命令合并','Agent Teams 由 Lead/任务 owner 统一发用户通知','AKE · 本次无新增知识','用户可见最终报告','Agent Note','Defensive Pattern','Postmortem','Cookbook','授权/发布','验证：'])assert.ok(skill.includes(phrase),phrase)});
 test('init preserves existing Skills and isolates project knowledge',async t=>{
  const base=await mkdtemp(path.join(os.tmpdir(),'ake-scopes-'));t.after(()=>rm(base,{recursive:true,force:true}));
  const home=path.join(base,'home'),env={...process.env,HOME:home,USERPROFILE:home,DSH_AGENTS_HOME:path.join(home,'.agents')};
@@ -17,7 +18,7 @@ test('init preserves existing Skills and isolates project knowledge',async t=>{
   const project=path.join(base,name);await mkdir(project);assert.equal(spawnSync('git',['init',project]).status,0);
   const legacy=path.join(project,'.agents/skills/knowledge-ops/SKILL.md');await mkdir(path.dirname(legacy),{recursive:true});await writeFile(legacy,'legacy custom');
   const existing=path.join(project,'.agents/skills/ake/SKILL.md');if(name==='two'){await mkdir(path.dirname(existing),{recursive:true});await writeFile(existing,'project custom');}
-  x=run(root,'init','--dir',project,...(name==='two'?['--skill-scope','user']:[]));assert.equal(x.status,0,x.stderr+' '+x.stdout);
+  x=run(root,'init','--dir',project,...(name==='two'?['--skill-scope','user']:[]));assert.equal(x.status,0,x.stderr+' '+x.stdout);assert.match(x.stdout,/Install the ake Skill separately/);
   assert.equal(await readFile(legacy,'utf8'),'legacy custom');if(name==='two')assert.equal(await readFile(existing,'utf8'),'project custom');else await assert.rejects(access(existing));
   const local=path.join(project,'.ake/tools/scripts/ake.mjs');
   const result=spawnSync(process.execPath,[local,'status','--json'],{cwd:project,env,encoding:'utf8'});assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).project,await realpath(project));

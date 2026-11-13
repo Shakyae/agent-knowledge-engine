@@ -1,6 +1,6 @@
 # Agent Knowledge Engine (AKE) v0.1
 
-A portable, low-intrusion engineering-knowledge layer for coding agents. Agents retrieve existing project knowledge before a task, capture new knowledge where it is discovered, and promote it to formal knowledge only after an independent review and an explicit human authorization.
+A portable, low-intrusion engineering-knowledge layer for coding agents. Agents retrieve existing project knowledge when relevant, capture reusable results in one of four knowledge kinds, and publish through a bound review/authorization gate. Team workflows use an eligible independent reviewer; Single Session uses an explicitly recorded author self-review. After the review gate, local automatic authorization is the default; neither self-review nor automatic authorization is misrepresented as independent or human.
 
 There is no server, database or plugin: knowledge is Markdown in the project's Git repository, behaviour is described by a Skill plus `AGENTS.md`, and a dependency-free Node CLI performs the format checks, keyword retrieval, candidate lifecycle and publish gate.
 
@@ -15,7 +15,7 @@ AKE gives that knowledge:
 - **a place**: four knowledge kinds adapted from the official DSH conventions,
 - **a way in**: `ake search` plus a Skill that defines when and how to search,
 - **a way to grow**: candidates captured where the experience emerged, with evidence and applicability recorded,
-- **a way to stay honest**: an independent review requirement, a hash-bound publish gate and a declared human authorization,
+- **a way to stay honest**: explicit review/authorization modes, a hash-bound publish gate and audit records,
 - **an honest boundary**: it is a process and tooling layer, not a security mechanism (see [Limitations](#limitations)).
 
 ## Requirements
@@ -41,7 +41,7 @@ node scripts/ake.mjs init --dir /path/to/your/project
 npx skills add /path/to/ake-checkout --skill ake --agent codex --agent claude-code
 ```
 
-`init` creates knowledge directories, configuration and a self-contained CLI at `.ake/tools/scripts/ake.mjs`; it does not install or inspect Skills. Each project's data stays in that project. Use the Skill's commands from the target project root, so the shared Skill invokes that project's CLI. `init` leaves differing existing files untouched and reports conflicts; it may still create other safe items. Existing `AGENTS.md` is preserved unless you explicitly request `--merge-agents`.
+`init` creates knowledge directories, configuration and a self-contained CLI at `.ake/tools/scripts/ake.mjs`; it does not install or inspect Skills. Its output explicitly reminds you to install the `ake` Skill separately; presence does not prove it was loaded. Each project's data stays in that project. Use the Skill's commands from the target project root, so the shared Skill invokes that project's CLI. `init` leaves differing existing files untouched and reports conflicts; it may still create other safe items. An existing unmarked `AGENTS.md` gets the marked trigger block appended by default, preserving all original bytes and remaining idempotent. Existing mismatched/malformed marker blocks remain conflicts and are never overwritten. `--merge-agents` is retained as a compatibility flag.
 
 Skills CLI 1.7.6 was tested on macOS with a temporary HOME and project: for the commands above it created a real canonical `.agents/skills/ake` directory and a Claude Code `.claude/skills/ake` symlink to it, both globally and in the project. This is not a symlink to the source checkout. Modes and fallback behavior may vary, especially on Windows; `--copy` requests independent copies. The [Skills agent table](https://github.com/vercel-labs/skills/blob/main/docs/agents.md) identifies Codex and Claude Code paths, not DSH as a target. DSH's filesystem provider can scan `.agents/skills` at project/user scope when enabled and configured accordingly; `DSH_AGENTS_HOME` and custom roots can differ. Installation alone does not prove an Agent loaded the Skill. Real Claude Code, Codex and Windows loading were not tested.
 
@@ -65,10 +65,10 @@ Commit the installed layout: knowledge and its audit trail are project files, re
 
 ## The workflow
 
-1. **Retrieve before you build.** Turn the task into keywords (module, technology, symptom, operation), search all four kinds, read only the hits whose recorded `scope`/`verified` still apply, and say in your task summary which knowledge you used. A miss means "not found", not "does not exist".
-2. **Capture after you learn.** If a durable decision, a verified procedure, a defect class or an incident with a reusable lesson emerged, first search for the existing owner of that fact. Prefer updating it; a new document is the last resort.
-3. **Review independently.** A candidate's author cannot review their own candidate. In a single session that means a human reviewer; in Agent Teams it means a different member with the ability to check the evidence.
-4. **Publish centrally, with authorization.** One designated publisher runs `ake publish` after a human explicitly approves. The CLI refuses if the candidate body, the target path or the target file changed since the review.
+1. **Retrieve visibly before you build.** Before the first AKE CLI call in the retrieval stage, tell the user briefly that you are searching AKE knowledge; coalesce consecutive calls into one notice. In Agent Teams, only Lead/owner notifies the user; members report to Lead. Turn the task into keywords (module, technology, symptom, operation), search all four kinds, show category labels, read only hits whose recorded `scope`/`verified` still apply, and report which knowledge you used. A miss means "not found", not "does not exist".
+2. **Report and capture after you learn.** Before the first candidate action, tell the user which reusable result will be captured as Agent Note, Defensive Pattern, Postmortem or Cookbook; coalesce same-stage commands and let the Team Lead send one unified notice. If none is warranted, report exactly `AKE · 本次无新增知识`. If it does, first search for the existing owner of that fact. Prefer updating it; a new document is the last resort. Report pending candidate IDs and why they remain unpublished.
+3. **Check and review honestly.** Run `candidate check` and inspect structure, scope/evidence, links, target, duplicate hints and verification. Prefer a capable Team reviewer who did not create the candidate. In a Single Session or when no suitable reviewer exists, use explicitly recorded author self-review; never describe it as independent.
+4. **Publish locally after the review gate.** Automatic local authorization is the default (`approve <id> --confirm`); it records `mode: automatic`, not human approval. Use `--by <human>` only when a human authorization is explicitly requested. Both paths preserve status, review/approval binding, validation, target drift detection and publish/reconcile gates.
 
 Candidate lifecycle (`draft → submitted → reviewed → approved → published`, with `rejected`/`superseded` branches) and the publish gate are specified in [docs/architecture.md](docs/architecture.md) §6.
 
@@ -79,14 +79,17 @@ node .ake/tools/scripts/ake.mjs candidate new --kind note \
   --title "…" --target .agents/notes/proposed/process/2026-11-10-….md \
   --author "<agent>" --body /tmp/draft.md
 node .ake/tools/scripts/ake.mjs candidate submit C-0001
-node .ake/tools/scripts/ake.mjs review C-0001 --reviewer "<human or other agent>" --verdict approve --notes "checked evidence"
-node .ake/tools/scripts/ake.mjs approve C-0001 --by "<human>" --confirm
+# If no suitable independent reviewer is available: record the actual author self-review.
+node .ake/tools/scripts/ake.mjs candidate check C-0001
+node .ake/tools/scripts/ake.mjs review C-0001 --self-review --verdict approve --notes "checked scope, evidence, format, links, target, alternatives and verification"
+# Default local automatic authorization after self-review:
+node .ake/tools/scripts/ake.mjs approve C-0001 --confirm
 node .ake/tools/scripts/ake.mjs publish C-0001
 ```
 
 ### Agent Teams
 
-The same commands, with the work split by capability rather than by member name: the agent that did the task searches and proposes, a member that did not generate the candidate reviews it, and one designated publisher runs the publish step after the human authorization. Independent review is a declared-role check, not verified identity — see the limitations.
+The agent that did the task searches and proposes; an eligible member who did not generate the candidate reviews it; one designated publisher uses the default local automatic authorization and publishes. If no suitable reviewer exists, record the actual author self-review and continue through the same automatic publish gate. Independent review is a declared-role check, not verified identity — see the limitations.
 
 ## Knowledge kinds
 
@@ -103,12 +106,12 @@ One fact has one authoritative home; related knowledge is linked with relative M
 
 | Command | Purpose |
 |---|---|
-| `ake init [--dir] [--dry-run] [--merge-agents]` | plan and install the knowledge layout; Skill installation is separate |
+| `ake init [--dir] [--dry-run] [--merge-agents]` | plan/install knowledge layout; append AKE rules to unmarked `AGENTS.md` by default and remind about separate Skill installation |
 | `ake search <terms…> [--type] [--limit] [--include-candidates] [--json]` | keyword retrieval with coverage reporting |
 | `ake validate [--project] [--path] [--json]` | format, link, id and lifecycle checks |
 | `ake candidate new/submit/revise/list/show/check <id>` | candidate lifecycle and drift/similarity report |
-| `ake review <id> --reviewer --verdict [--notes]` | independent review record (author self-review refused) |
-| `ake approve <id> --by <human> --confirm` | declared human authorization bound to the current content |
+| `ake review <id> --reviewer --verdict [--notes]` or `--self-review` | independent review or explicitly identified author self-review, bound to current content |
+| `ake approve <id> --confirm` [default] or `--by <human> --confirm` | default bound local automatic authorization, or explicitly requested human authorization |
 | `ake publish <id> [--dry-run\|--reconcile]` | fail-closed publication, atomic write, audit log line; `--reconcile` completes the ledger after an unknown result when the target already matches the approved content |
 | `ake status` | knowledge counts, pending candidates, unverified entries |
 
@@ -118,7 +121,7 @@ Exit codes: `0` success, `1` validation/gate refusal (with the concrete reason),
 
 - **Not a security boundary.** In a shared writable workspace, ordinary file and shell tools can still edit formal knowledge directly, and `--by`/`--reviewer` strings are declarations, not verified identities. The publish gate checks only operations that go through the CLI; it does not prevent bypass, and there is no filesystem lock or multi-file transaction. Never report the workflow as mandatory enforcement.
 - **Retrieval is lexical.** `ake search` matches tokens deterministically and reports its scope and coverage; it does not perform semantic retrieval, cannot guarantee recall, and does not decide whether knowledge still applies. Scores are ranking hints, not relevance probabilities.
-- **No automatic publishing.** Independent review plus an explicit human authorization remain required in v0.1; the preconditions for changing that are recorded in `.agents/notes/proposed/process/2026-11-09-team-auto-publish-preconditions.md`.
+- **Automatic publishing is local and gate-bound.** After the required review (independent in Teams; explicitly identified self-review in Single Session), local automatic authorization is the default; `--confirm` is the CLI write confirmation, not a request for an extra human reviewer/approver. It records automatic authorization and does not claim human approval. It does not weaken bound review, validation, drift or recovery gates. Historical preconditions remain in `.agents/notes/proposed/process/2026-11-09-team-auto-publish-preconditions.md` as prior design context.
 - **Verification scope.** Unit tests and isolation-project integration tests run in CI-like conditions. Real DSH Single-Session and Agent Teams runs are recorded as individual observations, not statistics; retrieval recall, adherence and identity verification remain unverified. See [docs/test-report.md](docs/test-report.md).
 - **Not implemented in v0.1**: DSH runtime plugin, MCP server, vector index, background service, web UI, central approval service, bilingual note triplets, the official `archived/` tree.
 

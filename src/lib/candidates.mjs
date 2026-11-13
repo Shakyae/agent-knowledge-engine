@@ -7,6 +7,14 @@ import { kindRoot, loadConfig, resolveKindTarget } from './config.mjs';
 export const bindingFields = ['contentHash', 'target', 'targetHash', 'operation'];
 export function bindingOf(meta) { return Object.fromEntries(bindingFields.map(k => [k, meta[k]])); }
 export function sameBinding(a, b) { return bindingFields.every(k => a?.[k] === b?.[k]); }
+function nonemptyIdentity(value) { return typeof value === 'string' && value.trim().length > 0; }
+export function hasBoundApproveReview(meta, binding, { allowSelf = false } = {}) {
+  return (meta.reviews ?? []).some(review => {
+    if (review.verdict !== 'approve' || !sameBinding(review, binding)) return false;
+    if (review.mode === 'self') return allowSelf && nonemptyIdentity(meta.author) && review.reviewer === meta.author;
+    return (review.mode === undefined || review.mode === 'independent') && nonemptyIdentity(review.reviewer) && review.reviewer !== meta.author;
+  });
+}
 export function parseCandidate(text) { const p = parseFrontmatter(text); if (p.error || !p.data.akeCandidate) throw Error(p.error ?? 'missing akeCandidate'); return { meta: p.data.akeCandidate, body: p.body.replace(/^<!-- body -->\n/, '') }; }
 export function renderCandidate(meta, body) { return stringifyFrontmatter({ akeCandidate: meta }, `<!-- body -->\n${normalize(body)}`); }
 export async function candidatePath(root, id) { const dir = path.resolve(root, (await loadConfig(root)).candidatesDir); if (!inside(root, dir)) throw Error(`candidate directory escapes project root: ${dir}`); await assertRealInside(root, dir); for (const f of await readdir(dir).catch(() => [])) if (f.startsWith(`${id}-`) && f.endsWith('.md')) return assertRealInside(root, path.join(dir, f)); throw Error(`candidate ${id} not found in ${dir}`); }

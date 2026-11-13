@@ -27,3 +27,7 @@ Before the atomic write the CLI persists an in-flight marker (`pendingPublicatio
 ## Consequences
 
 Candidates are slightly more verbose and an edited target forces a re-review by design. The gate closes the observed-drift hole but is not a security boundary: ordinary file tools can still edit formal knowledge directly, and `--by` / `--reviewer` strings are declarations, not verified identities (P-UNVERIFIED-1). There is no multi-file transaction and no TOCTOU-free exclusivity after the final hash check, and real process-crash recovery is covered only by injected failures.
+
+## Supersession history (2026-11-13)
+
+The hash-binding, observed-drift invalidation, validation, atomic write, ledger and explicit reconciliation decisions above remain current. The claim that publishing requires a declared human authorization records the prior v0.1 contract and is superseded: default local publishing now records `mode: automatic` after a current bound review (independent Team review, or explicitly identified author self-review when no suitable reviewer is available). Human approval remains available only as a backward-compatible explicitly selected mode. Reviewer identities and automatic authorization remain declarations, not verified facts. See current `docs/architecture.md` §6 and the test supplement in `docs/test-report.md`.

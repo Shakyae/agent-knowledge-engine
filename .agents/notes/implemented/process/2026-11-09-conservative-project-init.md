@@ -23,3 +23,7 @@ A project initializer is the one AKE component that runs against someone else's 
 ## Consequences
 
 Targets that already have `AGENTS.md` must merge manually once (copy `.ake/AGENTS-fragment.md`). Init is not a migration or upgrade mechanism: after a tool upgrade, differing `.ake/tools` files are reported as conflicts instead of being replaced, so the user decides. There is no `--force`: destructive intent must be carried out by the user, not by a flag we make easy to type.
+
+## Supersession history (2026-11-13)
+
+The preceding statements describe the prior v0.1 initialization contract and are retained as historical design rationale. An explicitly authorized amendment now makes the marker append the default for an existing unmarked `AGENTS.md`; the initializer preserves all original bytes and remains idempotent. `--merge-agents` remains accepted for compatibility. Existing malformed or differing marker blocks still conflict and are never overwritten. See the current contract in `docs/architecture.md` §7 and automated evidence in `docs/test-report.md`.
