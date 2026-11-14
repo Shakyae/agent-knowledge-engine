@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { readFile, readdir, lstat, realpath, readlink, mkdtemp, rm, mkdir, cp } from 'node:fs/promises';
+import { readFile, readdir, lstat, realpath, readlink, mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { readInstallation } from './installation.mjs';
 import { resolveOfficialSource, resolveRemote, runGit } from './git-remote.mjs';
@@ -221,13 +221,14 @@ async function resolveWindowsCli(command, { env = process.env } = {}) {
   if (match.extension !== '.cmd') return null;
   const directories = [...new Set([path.dirname(match.candidate), path.dirname(process.execPath)])];
   for (const directory of directories) {
-    const packageRoot = path.join(directory, 'node_modules', command === 'npx' ? 'npm' : 'skills');
+    const packageName = ['npx', 'npm'].includes(command) ? 'npm' : 'skills';
+    const packageRoot = path.join(directory, 'node_modules', packageName);
     try {
       const packagePath = path.join(packageRoot, 'package.json'), packageStat = await lstat(packagePath);
       if (!packageStat.isFile() || packageStat.isSymbolicLink()) continue;
       const pkg = JSON.parse(await readFile(packagePath, 'utf8'));
-      if (pkg.name !== (command === 'npx' ? 'npm' : 'skills')) continue;
-      const bin = command === 'npx' ? pkg.bin?.npx : (typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.skills);
+      if (pkg.name !== packageName) continue;
+      const bin = command === 'npx' ? pkg.bin?.npx : command === 'npm' ? pkg.bin?.npm : (typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.skills);
       if (typeof bin !== 'string' || path.isAbsolute(bin) || bin.split(/[\\/]/).includes('..')) continue;
       const cliPath = path.resolve(packageRoot, bin);
       const cliStat = await lstat(cliPath);
@@ -346,121 +347,77 @@ export async function createNpmWorkspace(home, { platform = process.platform, te
   }
 }
 
-function resolveNpmCache(home, { env = process.env, platform = process.platform } = {}) {
-  const configured = Object.entries(env).find(([key]) => key.toLowerCase() === 'npm_config_cache')?.[1];
-  if (typeof configured === 'string' && configured.trim()) return path.resolve(configured);
-  if (platform === 'win32') return path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'npm-cache');
-  return path.join(home, '.npm');
-}
 
-async function stageLocalNpxCache(base, home, npmDirectory, platform = process.platform) {
-  const cachedPackages = path.join(resolveNpmCache(home, { env: base, platform }), '_npx');
-  const info = await lstat(cachedPackages).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
-  if (!info || !info.isDirectory() || info.isSymbolicLink()) return false;
-  const isolatedCache = path.join(npmDirectory, 'cache');
-  await mkdir(isolatedCache, { recursive: true });
-  await cp(cachedPackages, path.join(isolatedCache, '_npx'), { recursive: true, dereference: false });
-  return true;
-}
-
-function cacheTimestampIsSane(info) {
-  return Number.isFinite(info.mtimeMs) && info.mtimeMs > 0 && info.mtimeMs <= Date.now() + 5 * 60_000;
-}
-
-async function realCacheDirectory(directory, platform = process.platform) {
-  const info = await lstat(directory);
-  if (!info.isDirectory() || info.isSymbolicLink()) return null;
-  const resolved = await realpath(directory);
-  return samePath(resolved, path.resolve(directory), platform) ? resolved : null;
-}
-
-export async function discoverCachedSkillsCli(home, { env = process.env, platform = process.platform } = {}) {
-  try {
-    const configuredCache = Object.entries(env).find(([key]) => key.toLowerCase() === 'npm_config_cache')?.[1];
-    const npmRoot = typeof configuredCache === 'string' && configuredCache.trim()
-      ? path.resolve(configuredCache)
-      : path.resolve(platform === 'win32' ? resolveNpmCache(home, { env, platform }) : path.join(await realpath(home), '.npm'));
-    if (!await realCacheDirectory(npmRoot, platform)) return [];
-    const npxRoot = path.join(npmRoot, '_npx');
-    const npxReal = await realCacheDirectory(npxRoot, platform);
-    if (!npxReal) return [];
-    const entries = await readdir(npxReal, { withFileTypes: true });
-    const candidates = [];
-    for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
-      if (!entry.isDirectory() || !/^[A-Za-z0-9_-]+$/.test(entry.name)) continue;
-      try {
-        const hashRoot = path.join(npxReal, entry.name);
-        const hashReal = await realCacheDirectory(hashRoot, platform);
-        if (!hashReal) continue;
-        const nodeModules = path.join(hashReal, 'node_modules');
-        const packageDirectory = path.join(nodeModules, 'skills');
-        const binDirectory = path.join(nodeModules, '.bin');
-        const packageReal = await realCacheDirectory(packageDirectory, platform);
-        const binReal = await realCacheDirectory(binDirectory, platform);
-        const skillsBinReal = await realCacheDirectory(path.join(packageDirectory, 'bin'), platform);
-        if (!await realCacheDirectory(nodeModules, platform) || !packageReal || !binReal || !skillsBinReal) continue;
-
-        let binEntry = path.join(binReal, platform === 'win32' ? 'skills.cmd' : 'skills');
-        let binInfo;
-        if (platform === 'win32') {
-          for (const name of ['skills.cmd', 'skills']) {
-            binEntry = path.join(binReal, name);
-            binInfo = await lstat(binEntry).catch(() => null);
-            if (binInfo?.isFile() && !binInfo.isSymbolicLink() && cacheTimestampIsSane(binInfo)) break;
-          }
-          if (!binInfo?.isFile() || binInfo.isSymbolicLink() || !cacheTimestampIsSane(binInfo)) continue;
-        } else {
-          binInfo = await lstat(binEntry);
-          if ((!binInfo.isFile() && !binInfo.isSymbolicLink()) || !cacheTimestampIsSane(binInfo)) continue;
-          if (binInfo.isSymbolicLink() && await readlink(binEntry) !== '../skills/bin/cli.mjs') continue;
-        }
-
-        const packageJsonPath = path.join(packageReal, 'package.json');
-        const packageInfo = await lstat(packageJsonPath);
-        if (!packageInfo.isFile() || packageInfo.isSymbolicLink() || !cacheTimestampIsSane(packageInfo)) continue;
-        const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8'));
-        const packageBin = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.skills;
-        if (packageJson.name !== 'skills' || typeof packageBin !== 'string' || path.isAbsolute(packageBin) || packageBin.split(/[\\/]/).includes('..')) continue;
-
-        const expectedCli = path.join(skillsBinReal, 'cli.mjs');
-        const cliInfo = await lstat(expectedCli);
-        if (!cliInfo.isFile() || cliInfo.isSymbolicLink() || !cacheTimestampIsSane(cliInfo)) continue;
-        const cliPath = await realpath(expectedCli);
-        if (cliPath !== path.join(packageReal, 'bin', 'cli.mjs') || path.resolve(packageReal, packageBin) !== cliPath || !isWithinDirectory(packageReal, cliPath)) continue;
-        if (platform !== 'win32') {
-          if (binInfo.isSymbolicLink()) {
-            if (await realpath(binEntry) !== cliPath) continue;
-          } else if (!(await readFile(binEntry)).equals(await readFile(cliPath))) continue;
-        }
-        candidates.push(cliPath);
-      } catch { /* unreadable, anomalous, or malformed cache entries are unavailable */ }
-    }
-    return [...new Set(candidates)];
-  } catch { return []; }
-}
-
-function parseCachedCliVersion(output) {
-  const match = String(output).match(/\bv?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
-  return match ? { core: match.slice(1, 4).map(Number), prerelease: match[4] ?? '' } : null;
-}
-
-function compareCachedCliVersions(left, right) {
-  for (let index = 0; index < 3; index++) if (left.version.core[index] !== right.version.core[index]) return right.version.core[index] - left.version.core[index];
-  if (!left.version.prerelease && right.version.prerelease) return -1;
-  if (left.version.prerelease && !right.version.prerelease) return 1;
-  const prereleaseOrder = left.version.prerelease.localeCompare(right.version.prerelease);
-  if (prereleaseOrder) return prereleaseOrder;
-  return left.cliPath < right.cliPath ? -1 : left.cliPath > right.cliPath ? 1 : 0;
-}
-
-function makeSkillsEnvironment(base, home, npmDirectory) {
+export function makeSkillsEnvironment(base, home, npmDirectory, platform = process.platform) {
   const env = { ...base };
-  for (const key of Object.keys(env)) if (/^(GIT_.*|npm_config_.*)$/i.test(key)) delete env[key];
-  return {
-    ...env, HOME: home, TMPDIR: npmDirectory, TMP: npmDirectory, TEMP: npmDirectory,
+  for (const key of Object.keys(env)) if (/^(GIT_.*|npm_config_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|HOMEDRIVE|HOMEPATH|XDG_CONFIG_HOME|XDG_CACHE_HOME)$/i.test(key)) delete env[key];
+  const paths = platform === 'win32' ? path.win32 : path;
+  const result = {
+    ...env, HOME: home, USERPROFILE: home, APPDATA: paths.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: paths.join(home, 'AppData', 'Local'),
+    XDG_CONFIG_HOME: paths.join(home, '.config'), XDG_CACHE_HOME: paths.join(home, '.cache'),
+    TMPDIR: npmDirectory, TMP: npmDirectory, TEMP: npmDirectory,
     npm_config_cache: path.join(npmDirectory, 'cache'), npm_config_logs_dir: path.join(npmDirectory, 'logs'),
     npm_config_update_notifier: 'false',
   };
+  if (platform === 'win32') {
+    const root = paths.parse(home).root;
+    const drive = root.replace(/[\\/]+$/, '');
+    const relative = paths.relative(root, home);
+    result.HOMEDRIVE = drive;
+    result.HOMEPATH = relative ? `\\${relative}` : '\\';
+  }
+  return result;
+}
+
+async function assertRealHome(home, platform, label) {
+  const info = await lstat(home).catch(() => null);
+  if (!info?.isDirectory() || info.isSymbolicLink()) throw Object.assign(new Error(`${label} is missing, not a real directory, or is a symlink`), { code: 'PREFLIGHT' });
+  return realpath(home);
+}
+
+async function verifyHomeSentinel(home, env, platform, label) {
+  const expected = await assertRealHome(home, platform, label);
+  const { stdout } = await spawnCapture(process.execPath, ['-e', "process.stdout.write(require('node:os').homedir())"], { cwd: home, env, shell: false });
+  const actual = await realpath(stdout.trim()).catch(() => null);
+  if (!actual || !samePath(actual, expected, platform)) throw Object.assign(new Error(`${label} environment resolves to ${stdout.trim()}, expected ${expected}`), { code: 'PREFLIGHT' });
+}
+
+const PINNED_SKILLS_VERSION = '1.8.1';
+
+export async function acquirePinnedSkillsCli({ npmDirectory, baseEnvironment, platform = process.platform }) {
+  const cliHome = path.join(npmDirectory, 'home');
+  const cache = path.join(npmDirectory, 'cache');
+  const userConfig = path.join(npmDirectory, 'npmrc-user');
+  const globalConfig = path.join(npmDirectory, 'npmrc-global');
+  await mkdir(cliHome, { recursive: true });
+  await mkdir(cache, { recursive: true });
+  await writeFile(userConfig, '');
+  await writeFile(globalConfig, '');
+  const env = makeSkillsEnvironment(baseEnvironment, cliHome, npmDirectory, platform);
+  await verifyHomeSentinel(cliHome, env, platform, 'isolated npm HOME');
+  env.npm_config_cache = cache;
+  env.npm_config_userconfig = userConfig;
+  env.npm_config_globalconfig = globalConfig;
+  const npm = platform === 'win32' ? await resolveWindowsCli('npm', { env: baseEnvironment }) : { command: 'npm', prefix: [] };
+  if (!npm) throw Object.assign(new Error('npm is unavailable; cannot acquire the pinned Skills CLI'), { code: 'PREFLIGHT' });
+  await spawnCapture(npm.command, [...npm.prefix, 'install', '--prefix', npmDirectory, '--ignore-scripts', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org', `skills@${PINNED_SKILLS_VERSION}`], { env, cwd: npmDirectory, shell: false });
+  const packageRoot = path.join(npmDirectory, 'node_modules', 'skills');
+  const packageRootStat = await lstat(packageRoot);
+  if (!packageRootStat.isDirectory() || packageRootStat.isSymbolicLink()) throw Object.assign(new Error('pinned Skills CLI package directory is missing or unsafe'), { code: 'PREFLIGHT' });
+  const packagePath = path.join(packageRoot, 'package.json');
+  const packageStat = await lstat(packagePath);
+  if (!packageStat.isFile() || packageStat.isSymbolicLink()) throw Object.assign(new Error('pinned Skills CLI package metadata is missing or unsafe'), { code: 'PREFLIGHT' });
+  const pkg = JSON.parse(await readFile(packagePath, 'utf8'));
+  const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.skills;
+  if (pkg.name !== 'skills' || pkg.version !== PINNED_SKILLS_VERSION || typeof bin !== 'string' || path.isAbsolute(bin) || bin.split(/[\\/]/).includes('..')) throw Object.assign(new Error('installed Skills CLI package identity/version is not the pinned official package'), { code: 'PREFLIGHT' });
+  const cliPath = path.resolve(packageRoot, bin);
+  const cliStat = await lstat(cliPath);
+  const [npmReal, packageReal, cliReal] = await Promise.all([realpath(npmDirectory), realpath(packageRoot), realpath(cliPath)]);
+  if (!isWithinDirectory(npmReal, packageReal, platform) || !cliStat.isFile() || cliStat.isSymbolicLink() || !isWithinDirectory(packageReal, cliReal, platform)) throw Object.assign(new Error('pinned Skills CLI entry is missing or escapes its isolated package'), { code: 'PREFLIGHT' });
+  const version = await spawnCapture(process.execPath, [cliReal, '--version'], { env, shell: false });
+  const reportedVersion = version.stdout.match(/\b\d+\.\d+\.\d+\b/)?.[0];
+  if (reportedVersion !== PINNED_SKILLS_VERSION) throw Object.assign(new Error('pinned Skills CLI did not report the expected version'), { code: 'PREFLIGHT' });
+  return { command: process.execPath, prefix: [cliReal], version: PINNED_SKILLS_VERSION, env };
 }
 
 function writeDiagnostic(options, text) {
@@ -480,7 +437,7 @@ export async function runUpdate(options = {}) {
   const entry = options.entry ?? options.installationOptions?.entry ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../scripts/ake.mjs');
   let installationOptions = { ...(options.installationOptions ?? {}), entry };
   const output = { status: 'failed', stage: 'preflight', errorCode: null, message: '', dryRun: flags.dryRun, installationBefore: null, installationAfter: null, sourceUrl: null, defaultBranch: null, oldCommit: null, targetCommit: null, customization: null, baseline: null, backupPath: null, rollback: 'not_needed', warnings: [], initiatedBy: null, scopeBefore: null, bootstrap: false, reloadNotice: null };
-  let heldLock = null, backup = null, installation, effectsBefore, installStarted = false, npmDirectory = null, skillsEnvironment = null;
+  let heldLock = null, backup = null, installation, effectsBefore, installStarted = false, npmDirectory = null, skillsEnvironment = null, cli = null, cliPrefix = [];
   const report = (status, stage, code, message) => Object.assign(output, { status, stage, errorCode: code, message });
   try {
     const bundle = await findBundle(entry);
@@ -489,54 +446,7 @@ export async function runUpdate(options = {}) {
     const source = resolveInstallSource(pkg.repository.url); output.sourceUrl = source.sourceUrl;
     installationOptions = { ...installationOptions, sourceInfo: source };
     const platform = options.platform ?? process.platform;
-    const home = options.home ?? os.homedir();
     const baseEnvironment = options.env ?? process.env;
-    try { npmDirectory = await createNpmWorkspace(home, { platform, tempRoot: options.tempRoot ?? os.tmpdir(), env: baseEnvironment, entry, projectRoot: options.projectRoot ?? process.cwd() }); }
-    catch (error) { throw Object.assign(new Error(`cannot create controlled temporary npm workspace: ${error.message}`), { code: 'PREFLIGHT' }); }
-    skillsEnvironment = makeSkillsEnvironment(baseEnvironment, home, npmDirectory);
-    const probeEnvironment = makeSkillsEnvironment(baseEnvironment, npmDirectory, npmDirectory);
-    let cli = options.skillsCli ?? 'skills', cliPrefix = [];
-    const probeSkillsCli = options.probeSkillsCli ?? ((command, args, env) => spawnCapture(command, args, { env, shell: false }));
-    try {
-      if (platform === 'win32' && !options.skillsCli) {
-        const resolved = await resolveWindowsCli('skills', { env: baseEnvironment });
-        if (!resolved) throw Object.assign(new Error('spawn skills ENOENT'), { code: 'ENOENT' });
-        cli = resolved.command; cliPrefix = resolved.prefix;
-      }
-      await probeSkillsCli(cli, [...cliPrefix, '--version'], probeEnvironment);
-    }
-    catch (error) {
-      if (error.code === 'ENOENT') {
-        try {
-          await stageLocalNpxCache(baseEnvironment, home, npmDirectory, platform);
-          const npx = platform === 'win32' ? await resolveWindowsCli('npx', { env: baseEnvironment }) : { command: 'npx', prefix: [] };
-          if (!npx) throw Object.assign(new Error('spawn npx ENOENT'), { code: 'ENOENT' });
-          const npxArgs = [...npx.prefix, '--no-install', 'skills', '--version'];
-          await probeSkillsCli(npx.command, npxArgs, probeEnvironment);
-          cli = npx.command; cliPrefix = [...npx.prefix, '--no-install', 'skills'];
-          output.warnings.push('通过 npx --no-install 使用本地 Skills CLI 缓存；这不证明其版本或完整性，也未自动下载');
-        } catch (fallbackError) {
-          writeDiagnostic(options, `npx --no-install skills --version failed: ${fallbackError.stderr ?? fallbackError.message}`);
-          const runnable = [];
-          const candidates = await (options.discoverSkillsCli ?? discoverCachedSkillsCli)(home, { env: baseEnvironment, platform }).catch(() => []);
-          for (const candidate of candidates) {
-            try {
-              const result = await probeSkillsCli(process.execPath, [candidate, '--version'], probeEnvironment);
-              const version = parseCachedCliVersion(result?.stdout);
-              if (version) runnable.push({ cliPath: candidate, version });
-            } catch (candidateError) { writeDiagnostic(options, `cached Skills CLI probe failed for ${candidate}: ${candidateError.stderr ?? candidateError.message}`); }
-          }
-          runnable.sort(compareCachedCliVersions);
-          const discovered = runnable[0]?.cliPath;
-          if (!discovered) throw Object.assign(new Error('Skills CLI unavailable; npx --no-install fallback was attempted without downloading and failed. 请先安装 Vercel Skills CLI（例如 npm i -g skills），本次未自动下载。'), { code: 'PREFLIGHT' });
-          cli = process.execPath; cliPrefix = [discovered];
-          output.warnings.push('使用本机 npx 缓存中的 Skills CLI（只读发现）；版本和完整性未验证');
-        }
-      } else {
-        writeDiagnostic(options, `skills --version failed: ${error.stderr ?? error.message}`);
-        throw Object.assign(new Error('Skills CLI is unavailable. 请先安装 Vercel Skills CLI（例如 npm i -g skills）；未自动启动 npx 安装。'), { code: 'PREFLIGHT' });
-      }
-    }
     installation = await (options.resolveInstallation ?? resolveInstallation)(installationOptions);
     output.installationBefore = publicInstallation(installation);
     output.initiatedBy = installation.initiatedBy ?? 'installed-bundle'; output.scopeBefore = installation.scopeBefore ?? installation.scope; output.bootstrap = Boolean(installation.bootstrap);
@@ -556,19 +466,50 @@ export async function runUpdate(options = {}) {
     heldLock = await (options.acquireLock ?? acquireLock)(installation.agentsHome);
     installation = await (options.resolveInstallation ?? resolveInstallation)({ ...installationOptions, allowCompletedBootstrap: bootstrapInProgress });
     output.installationBefore = publicInstallation(installation);
+    if (installation.lock?.skills?.ake?.installMode === 'copy' && (installation.agentPaths ?? []).some(item => item.mode === 'symlink')) {
+      throw Object.assign(new Error('copy-mode Skills lock conflicts with an existing agent symlink; refusing because Skills CLI --copy may replace that symlink with an unbacked copy'), { code: 'IDENTITY_AMBIGUOUS' });
+    }
     const customizationDetails = {};
     const customization = await (options.detectCustomization ?? detectCustomization)(installation, remote, { gitRunner: options.gitRunner, report: customizationDetails });
     output.customization = customization; output.baseline = customizationDetails.baseline ?? null;
     // Explicit customized-source opt-in is a deliberate Lead 裁决 2026-11-14; never infer it from dry-run or status.
     if (customization !== 'clean' && !flags.acceptCustomized) throw Object.assign(new Error(`local installation is ${customization}; back it up and rerun only after explicit approval with --accept-customized`), { code: 'CUSTOMIZED_CONFIRMATION_REQUIRED' });
+    const targetHome = path.dirname(installation.agentsHome ?? '');
+    if (!path.isAbsolute(installation.agentsHome ?? '') || !samePath(path.join(targetHome, '.agents'), installation.agentsHome, platform)) throw Object.assign(new Error('verified installation has no canonical HOME/.agents target'), { code: 'IDENTITY_AMBIGUOUS' });
+    try { npmDirectory = await createNpmWorkspace(targetHome, { platform, tempRoot: options.tempRoot ?? os.tmpdir(), env: baseEnvironment, entry, projectRoot: options.projectRoot ?? process.cwd() }); }
+    catch (error) { throw Object.assign(new Error(`cannot create controlled temporary npm workspace: ${error.message}`), { code: 'PREFLIGHT' }); }
+    skillsEnvironment = makeSkillsEnvironment(baseEnvironment, targetHome, npmDirectory, platform);
+    const injectedCli = options.acquireSkillsCli || options.probeSkillsCli || options.skillsCli;
+    if (!injectedCli) {
+      await verifyHomeSentinel(targetHome, skillsEnvironment, platform, 'verified Skills target HOME');
+    }
+    try {
+      if (options.acquireSkillsCli) {
+        const acquired = await options.acquireSkillsCli({ npmDirectory, baseEnvironment, platform });
+        cli = acquired.command; cliPrefix = acquired.prefix ?? [];
+      } else if (options.probeSkillsCli || options.skillsCli) {
+        // Explicit injection is a test seam; the production path always fetches the pinned package in isolation.
+        cli = options.skillsCli ?? 'skills';
+        await (options.probeSkillsCli ?? ((command, args, env) => spawnCapture(command, args, { env, shell: false })))(cli, ['--version'], makeSkillsEnvironment(baseEnvironment, path.join(npmDirectory, 'home'), npmDirectory, platform));
+        output.warnings.push('测试注入的 Skills CLI；本次未验证官方 CLI acquisition');
+      } else {
+        const acquired = await acquirePinnedSkillsCli({ npmDirectory, baseEnvironment, platform });
+        cli = acquired.command; cliPrefix = acquired.prefix;
+        output.warnings.push(`真实更新使用隔离安装并校验的 Skills CLI ${acquired.version}（npm lifecycle scripts 已禁用）`);
+      }
+      if (!cli) throw new Error('Skills CLI acquisition returned no executable');
+    } catch (error) {
+      throw Object.assign(new Error(`cannot acquire verified Skills CLI before installation changes: ${error.message}`), { code: 'PREFLIGHT' });
+    }
     effectsBefore = await (options.snapshotInstallEffects ?? snapshotInstallEffects)(installation);
     backup = await (options.createBackup ?? createBackup)({ agentsHome: installation.agentsHome, installation, lockPath: installation.lockPath, targetCommit: remote.targetCommit });
     output.backupPath = backup.backupPath;
     const effectsAtBackup = await (options.snapshotInstallEffects ?? snapshotInstallEffects)(installation);
     if (effectsAtBackup !== effectsBefore) throw Object.assign(new Error('installation side effects changed while creating backup'), { code: 'DRIFT' });
+    const modeArgs = installation.lock?.skills?.ake?.installMode === 'copy' ? ['--copy'] : [];
     const agentArgs = ['-a', 'codex']; if ((installation.agentPaths ?? []).some(x => x.path.endsWith(path.join('.claude', 'skills', 'ake')))) agentArgs.push('-a', 'claude-code');
     installStarted = true;
-    try { await (options.runSkillsAdd ?? spawnCapture)(cli, [...cliPrefix, 'add', `${source.repo}@${remote.targetCommit}`, '--skill', 'ake', '-g', '-y', ...agentArgs], { env: skillsEnvironment, shell: false }); }
+    try { await (options.runSkillsAdd ?? spawnCapture)(cli, [...cliPrefix, 'add', `${source.repo}@${remote.targetCommit}`, '--skill', 'ake', '-g', '-y', ...modeArgs, ...agentArgs], { env: skillsEnvironment, shell: false }); }
     catch (error) { throw Object.assign(error, { code: error.code ?? 'INSTALL' }); }
     try {
       const effectsAfter = await (options.snapshotInstallEffects ?? snapshotInstallEffects)(installation);

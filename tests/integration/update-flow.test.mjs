@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, writeFile, chmod, rm, readFile, readdir, cp, lstat, symlink, readlink } from 'node:fs/promises';
+import { mkdir, writeFile, chmod, rm, readFile, readdir, cp, lstat, symlink, readlink, realpath } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { createBackup, restoreBackup } from '../../src/lib/install-backup.mjs';
-import { runUpdate, updateExitCode } from '../../src/lib/update.mjs';
+import { acquirePinnedSkillsCli, makeSkillsEnvironment, runUpdate, updateExitCode } from '../../src/lib/update.mjs';
 import { resolveRemote, runGit } from '../../src/lib/git-remote.mjs';
 import { cleanTestEnv, tempRoot } from '../helpers/test-env.mjs';
 
@@ -25,8 +26,11 @@ async function treeSnapshot(root) {
   async function walk(current, relative = '') {
     for (const item of await readdir(current, { withFileTypes: true })) {
       const name = relative ? `${relative}/${item.name}` : item.name;
-      entries.push([name, item.isDirectory() ? 'directory' : item.isSymbolicLink() ? 'symlink' : 'file']);
-      if (item.isDirectory()) await walk(path.join(current, item.name), name);
+      const full = path.join(current, item.name), info = await lstat(full), mode = info.mode & 0o777;
+      if (info.isSymbolicLink()) entries.push([name, 'symlink', mode, await readlink(full)]);
+      else if (info.isDirectory()) { entries.push([name, 'directory', mode]); await walk(full, name); }
+      else if (info.isFile()) entries.push([name, 'file', mode, createHash('sha256').update(await readFile(full)).digest('hex')]);
+      else entries.push([name, 'other', mode]);
     }
   }
   await walk(root); return entries.sort((a, b) => a[0].localeCompare(b[0]));
@@ -82,7 +86,107 @@ test('rollback rejects top-level lock drift without overwriting user state and k
   await lstat(result.backupPath).then(info => assert.equal(info.isDirectory(), true));
 });
 
-test('real network update remains opt-in and skipped by default', { skip: 'requires explicit network authorization and a disposable user-level install' }, () => {});
+test('real Skills CLI 1.8.1 copy mode preserves lock semantics and is isolated', { skip: process.env.AKE_RUN_REAL_SKILLS_CLI_TEST !== '1' && 'set AKE_RUN_REAL_SKILLS_CLI_TEST=1 for isolated npm/Skills CLI network verification' }, async t => {
+  const root = await makeWorkDir('ake-real-skills-cli-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const npmDirectory = path.join(root, 'npm-work'); await mkdir(npmDirectory);
+  const cli = await acquirePinnedSkillsCli({ npmDirectory, baseEnvironment: cleanTestEnv({ HOME: path.join(root, 'untrusted-host-home') }) });
+  assert.equal(cli.version, '1.8.1');
+  const source = path.join(root, 'source'); await mkdir(path.join(source, 'skills', 'ake'), { recursive: true });
+  await writeFile(path.join(source, 'skills', 'ake', 'SKILL.md'), '---\nname: ake\ndescription: isolated real Skills CLI fixture\n---\n# AKE fixture\n');
+  run('git', ['init', '-b', 'main', source]); run('git', ['-C', source, 'add', '.']); run('git', ['-C', source, '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'fixture']);
+  for (const copy of [false, true]) {
+    const home = path.join(root, copy ? 'home-copy' : 'home-default'); await mkdir(home);
+    const args = [...cli.prefix, 'add', source, '--skill', 'ake', '-g', '-y', '-a', 'codex', '-a', 'claude-code', '--json', ...(copy ? ['--copy'] : [])];
+    const installEnv = makeSkillsEnvironment(cli.env, home, npmDirectory);
+    const result = spawnSync(cli.command, args, { cwd: root, encoding: 'utf8', env: installEnv });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const canonical = path.join(home, '.agents', 'skills', 'ake'), claude = path.join(home, '.claude', 'skills', 'ake');
+    const canonicalStat = await lstat(canonical), claudeStat = await lstat(claude);
+    assert.equal(canonicalStat.isDirectory(), true); assert.equal(claudeStat.isSymbolicLink(), !copy);
+    const lock = JSON.parse(await readFile(path.join(home, '.agents', '.skill-lock.json'), 'utf8'));
+    assert.equal(lock.skills.ake.installMode, copy ? 'copy' : undefined);
+    assert.equal((await realpath(canonical)).startsWith(await realpath(root)), true);
+    if (copy) { assert.notEqual(await realpath(claude), await realpath(canonical)); assert.equal(await readFile(path.join(claude, 'SKILL.md'), 'utf8'), await readFile(path.join(canonical, 'SKILL.md'), 'utf8')); }
+    else {
+      assert.equal(await realpath(claude), await realpath(canonical));
+      const lockPath = path.join(home, '.agents', '.skill-lock.json'), beforeLock = await readFile(lockPath);
+      const mixedLock = JSON.parse(beforeLock); mixedLock.skills.ake.installMode = 'copy'; await writeFile(lockPath, JSON.stringify(mixedLock));
+      const copyLockBytes = await readFile(lockPath); let acquired = false, backed = false;
+      const refused = await runUpdate({ entry: fileURLToPath(new URL('../../scripts/ake.mjs', import.meta.url)), installationOptions: { entry: fileURLToPath(new URL('../../scripts/ake.mjs', import.meta.url)), home, env: cleanTestEnv({ HOME: home }) }, home,
+        env: cleanTestEnv({ HOME: home }), projectRoot: root, flags: { dryRun: false, json: true, acceptCustomized: true },
+        resolveRemote: async () => ({ sourceUrl: 'https://github.com/Shakyae/agent-knowledge-engine.git', repo: 'Shakyae/agent-knowledge-engine', defaultBranch: 'master', targetCommit: 'f'.repeat(40), entries: [] }),
+        acquireSkillsCli: async () => { acquired = true; return cli; }, createBackup: async () => { backed = true; } });
+      assert.equal(refused.errorCode, 'IDENTITY_AMBIGUOUS'); assert.equal(acquired || backed, false);
+      assert.equal((await lstat(claude)).isSymbolicLink(), true); assert.deepEqual(await readFile(lockPath), copyLockBytes);
+      await writeFile(lockPath, beforeLock);
+      const mixedUpdate = spawnSync(cli.command, [...cli.prefix, 'add', source, '--skill', 'ake', '-g', '-y', '-a', 'codex', '-a', 'claude-code', '--copy', '--json'], { cwd: root, encoding: 'utf8', env: installEnv });
+      assert.equal(mixedUpdate.status, 0, mixedUpdate.stderr || mixedUpdate.stdout);
+      assert.equal((await lstat(claude)).isSymbolicLink(), false);
+      assert.equal(JSON.parse(await readFile(path.join(home, '.agents', '.skill-lock.json'), 'utf8')).skills.ake.installMode, 'copy');
+    }
+  }
+});
+
+test('real official old SHA updates to current HEAD with copy and preserves unrelated skills', { skip: process.env.AKE_RUN_REAL_OLD_TO_NEW_UPDATE !== '1' && 'set AKE_RUN_REAL_OLD_TO_NEW_UPDATE=1 for isolated old-SHA-to-HEAD verification' }, async t => {
+  const oldSha = '450d2a711a5a3ac806bff532d03b969b6c45c2fb';
+  const root = await makeWorkDir('ake-real-old-to-new-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const homeRequested = path.join(root, 'home'); await mkdir(homeRequested); const home = await realpath(homeRequested);
+  const npmDirectory = path.join(root, 'initial-cli'); await mkdir(npmDirectory);
+  const cli = await acquirePinnedSkillsCli({ npmDirectory, baseEnvironment: cleanTestEnv({ HOME: path.join(root, 'host-home') }) });
+  const installEnv = makeSkillsEnvironment(cli.env, home, npmDirectory);
+  const oldInstall = spawnSync(cli.command, [...cli.prefix, 'add', `Shakyae/agent-knowledge-engine@${oldSha}`, '--skill', 'ake', '-g', '-y', '-a', 'codex', '--copy', '--json'], { cwd: root, encoding: 'utf8', env: installEnv });
+  assert.equal(oldInstall.status, 0, oldInstall.stderr || oldInstall.stdout);
+  const agentsHome = path.join(home, '.agents'), canonical = path.join(agentsHome, 'skills', 'ake'), lockPath = path.join(agentsHome, '.skill-lock.json');
+  let lock = JSON.parse(await readFile(lockPath, 'utf8'));
+  assert.equal(lock.skills.ake.ref, oldSha); assert.equal(lock.skills.ake.installMode, 'copy'); assert.equal((await lstat(canonical)).isDirectory(), true);
+  const entry = path.join(canonical, 'resources', 'ake-source', 'scripts', 'ake.mjs'); assert.equal((await lstat(entry)).isFile(), true);
+  const otherSkill = path.join(agentsHome, 'skills', 'other-skill'); await mkdir(otherSkill, { recursive: true }); await writeFile(path.join(otherSkill, 'SKILL.md'), 'keep this non-AKE skill');
+  const otherRecord = { sourceType: 'local', source: 'test-fixture', skillPath: 'skills/other-skill/SKILL.md' }; lock.skills.other = otherRecord; await writeFile(lockPath, JSON.stringify(lock));
+  const calls = [];
+  const result = await runUpdate({ entry, installationOptions: { entry, home, env: cleanTestEnv({ HOME: home }) }, home, env: cleanTestEnv({ HOME: home }), projectRoot: root,
+    package: JSON.parse(await readFile(path.join(fileURLToPath(new URL('../..', import.meta.url)), 'package.json'), 'utf8')),
+    flags: { dryRun: false, json: true, acceptCustomized: false },
+    runSkillsAdd: async (command, args, options) => {
+      calls.push({ command, args, home: options.env.HOME, userprofile: options.env.USERPROFILE });
+      const installed = spawnSync(command, args, { encoding: 'utf8', env: options.env, cwd: root, shell: false });
+      if (installed.error || installed.status !== 0) throw Object.assign(new Error(installed.stderr || installed.error?.message || `skills exited ${installed.status}`), { code: 'INSTALL', stderr: installed.stderr });
+    } });
+  assert.equal(result.status, 'updated', JSON.stringify(result)); assert.equal(result.oldCommit, oldSha); assert.notEqual(result.targetCommit, oldSha);
+  assert.equal(result.installationBefore.agentPaths.length, 1); assert.ok(calls[0].args.includes('--copy')); assert.ok(calls[0].args.includes('-a') && calls[0].args.includes('codex'));
+  assert.equal(calls[0].args.includes('claude-code'), false); assert.equal(calls[0].home, home); assert.equal(calls[0].userprofile, home);
+  lock = JSON.parse(await readFile(lockPath, 'utf8')); assert.equal(lock.skills.ake.ref, result.targetCommit); assert.equal(lock.skills.ake.installMode, 'copy'); assert.deepEqual(lock.skills.other, otherRecord);
+  assert.equal(await readFile(path.join(otherSkill, 'SKILL.md'), 'utf8'), 'keep this non-AKE skill');
+  assert.equal(await lstat(result.backupPath).then(info => info.isDirectory()), true); assert.equal(result.backupPath.startsWith(home), true);
+  assert.equal((await realpath(canonical)).startsWith(await realpath(root)), true);
+  t.diagnostic(`verified official Skills CLI update ${oldSha} -> ${result.targetCommit}; copy mode and non-AKE sibling preserved`);
+});
+
+test('real isolated update runs the verified Skills CLI without touching the user install', { skip: process.env.AKE_RUN_REAL_SKILLS_UPDATE !== '1' && 'set AKE_RUN_REAL_SKILLS_UPDATE=1 for isolated GitHub update verification' }, async t => {
+  const root = await makeWorkDir('ake-real-update-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceRoot = fileURLToPath(new URL('../..', import.meta.url)), checkout = path.join(root, 'checkout');
+  run('git', ['clone', '--quiet', sourceRoot, checkout]);
+  run('git', ['-C', checkout, 'remote', 'set-url', 'origin', 'https://github.com/Shakyae/agent-knowledge-engine.git']);
+  await cp(path.join(sourceRoot, 'src', 'lib', 'update.mjs'), path.join(checkout, 'src', 'lib', 'update.mjs'));
+  const requestedHome = path.join(root, 'home'); await mkdir(requestedHome);
+  const home = await realpath(requestedHome), canonical = path.join(home, '.agents', 'skills', 'ake'); await mkdir(path.dirname(canonical), { recursive: true });
+  await cp(path.join(checkout, 'skills', 'ake'), canonical, { recursive: true });
+  const claude = path.join(home, '.claude', 'skills', 'ake'); await mkdir(path.dirname(claude), { recursive: true }); await symlink(path.relative(path.dirname(claude), canonical), claude);
+  await writeFile(path.join(home, '.agents', '.skill-lock.json'), JSON.stringify({ version: 3, skills: { ake: { sourceType: 'local', source: checkout } }, dismissed: {} }));
+  const entry = path.join(checkout, 'scripts', 'ake.mjs');
+  const result = await runUpdate({ entry, installationOptions: { entry, home, env: cleanTestEnv({ HOME: home }) }, home,
+    env: cleanTestEnv({ HOME: home }), projectRoot: root, flags: { dryRun: false, json: true, acceptCustomized: true } });
+  assert.equal(result.status, 'updated', JSON.stringify(result)); assert.equal(result.rollback, 'not_needed'); assert.equal(result.installationAfter.scope, 'user');
+  assert.equal((await lstat(canonical)).isDirectory(), true); assert.equal((await lstat(claude)).isSymbolicLink(), true); assert.equal(await realpath(claude), await realpath(canonical));
+  const lock = JSON.parse(await readFile(path.join(home, '.agents', '.skill-lock.json'), 'utf8'));
+  assert.equal(lock.skills.ake.ref, result.targetCommit); assert.equal(lock.skills.ake.skillPath, 'skills/ake/SKILL.md');
+  assert.equal(await lstat(result.backupPath).then(info => info.isDirectory()), true);
+  const beforeRepeat = await treeSnapshot(home);
+  const repeated = await runUpdate({ entry, installationOptions: { entry, home, env: cleanTestEnv({ HOME: home }), allowCompletedBootstrap: true }, home,
+    env: cleanTestEnv({ HOME: home }), projectRoot: root, flags: { dryRun: false, json: true, acceptCustomized: true }, acquireSkillsCli: async () => { throw new Error('idempotent check must not acquire CLI'); } });
+  assert.equal(repeated.status, 'up_to_date', JSON.stringify(repeated)); assert.equal(repeated.backupPath, null);
+  assert.deepEqual(await treeSnapshot(home), beforeRepeat);
+
+});
 
 test('installed entry updates to a bare-repo commit without repository.url and reports source unknown', async t => {
   const root = await makeWorkDir('ake-installed-entry-'); t.after(() => rm(root, { recursive: true, force: true }));
@@ -111,32 +215,15 @@ test('installed entry updates to a bare-repo commit without repository.url and r
   assert.equal(rejected.errorCode, 'IDENTITY_AMBIGUOUS'); assert.equal(rejected.status, 'failed');
 });
 
-test('dry-run failed npx probe writes only to controlled temp and leaves HOME unchanged', async t => {
-  const root = await makeWorkDir('ake-npm-isolation-'); t.after(() => rm(root, { recursive: true, force: true }));
-  const home = path.join(root, 'home'), bin = path.join(root, 'bin'), capture = path.join(root, 'npx-env.json'); await mkdir(home, { recursive: true }); await mkdir(bin);
-  const npx = path.join(bin, 'npx'); await writeFile(npx, `#!/usr/bin/env node\nconst fs=require('node:fs'),path=require('node:path'); const logDir=process.env.npm_config_logs_dir; fs.mkdirSync(logDir,{recursive:true}); const log=path.join(logDir,'eresolve-report.txt'); fs.writeFileSync(log,'raw npm log'); fs.writeFileSync(process.env.AKE_NPX_CAPTURE,JSON.stringify({cache:process.env.npm_config_cache,logs:logDir,log})); process.stderr.write('npm ERR! logfile '+log); process.exit(1);\n`); await chmod(npx, 0o755);
-  const before = await treeSnapshot(home); let stderr = '';
-  const env = cleanTestEnv({ HOME: home, PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}`, AKE_NPX_CAPTURE: capture });
-  const result = await runUpdate({ home, env, flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
-    probeSkillsCli: async (command, args, probeEnv) => { const response = spawnSync(command, args, { encoding: 'utf8', env: probeEnv }); if (response.error) throw response.error; if (response.status !== 0) throw Object.assign(new Error(response.stderr), { code: 'INSTALL', stderr: response.stderr }); return response; },
-    writeStderr: message => { stderr += message; }, resolveInstallation: async () => { throw new Error('identity should not run after preflight failure'); } });
-  assert.equal(result.status, 'failed'); assert.equal(result.errorCode, 'PREFLIGHT'); assert.equal(updateExitCode(result), 1);
-  const after = await treeSnapshot(home); assert.deepEqual(after, before);
-  const diagnostics = JSON.parse(await readFile(capture, 'utf8')); assert.ok(diagnostics.cache.startsWith(os.tmpdir())); assert.ok(diagnostics.logs.startsWith(os.tmpdir()));
-  await assert.rejects(lstat(path.dirname(diagnostics.cache)), { code: 'ENOENT' });
-  assert.ok(stderr.includes(diagnostics.log)); assert.ok(!result.message.includes(diagnostics.log)); assert.ok(!JSON.stringify(result).includes(path.join(home, '.npm')));
-});
-
-test('PATH without skills uses a local npx stub only with --no-install', async t => {
-  const root = await makeWorkDir('ake-npx-fallback-'); t.after(() => rm(root, { recursive: true, force: true }));
-  const bin = path.join(root, 'bin'), capture = path.join(root, 'npx-args.json'); await mkdir(bin);
-  const npx = path.join(bin, 'npx'); await writeFile(npx, `#!/usr/bin/env node\nimport fs from 'node:fs'; fs.writeFileSync(process.env.NPX_CAPTURE, JSON.stringify(process.argv.slice(2))); process.stdout.write('1.8.1\\n');\n`); await chmod(npx, 0o755);
-  const installation = { agentsHome: path.join(root, '.agents'), canonicalPath: path.join(root, '.agents', 'skills', 'ake'), lockPath: path.join(root, '.agents', '.skill-lock.json'), lock: { skills: { ake: { sourceType: 'local' } } } };
-  const result = await runUpdate({ flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
-    probeSkillsCli: async (command, args) => { const response = spawnSync(command, args, { encoding: 'utf8', env: cleanTestEnv({ PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}`, HOME: root, NPX_CAPTURE: capture }) }); if (response.error) throw response.error; if (response.status !== 0) throw Object.assign(new Error(response.stderr), { code: 'INSTALL' }); return response; },
-    resolveInstallation: async () => installation, resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'f'.repeat(40), entries: [] }) });
-  assert.equal(result.status, 'dry_run', JSON.stringify(result)); assert.deepEqual(JSON.parse(await readFile(capture, 'utf8')), ['--no-install', 'skills', '--version']);
-  assert.ok(result.warnings.some(warning => warning.includes('不证明其版本或完整性')));
+test('dry-run skips npm/Skills CLI entirely and leaves HOME unchanged', async t => {
+  const root = await makeWorkDir('ake-dry-run-no-npm-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'); await mkdir(home);
+  const before = await treeSnapshot(home); let probed = false, acquired = false;
+  const installation = { lock: { skills: { ake: { sourceType: 'local' } } } };
+  const result = await runUpdate({ home, env: cleanTestEnv({ HOME: home }), flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    probeSkillsCli: async () => { probed = true; }, acquireSkillsCli: async () => { acquired = true; }, resolveInstallation: async () => installation,
+    resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'f'.repeat(40), entries: [] }) });
+  assert.equal(result.status, 'dry_run', JSON.stringify(result)); assert.equal(probed || acquired, false); assert.deepEqual(await treeSnapshot(home), before);
 });
 
 test('trusted checkout bootstrap migrates temp local install to exact remote SHA lock', async t => {
@@ -281,7 +368,7 @@ test('simulated Windows layout on macOS; not a real Windows run: dry-run uses is
   const result = await runUpdate({ home, env: { HOME: home, PATH: `${bin};`, PATHEXT: '.CMD' }, platform: 'win32', tempRoot, projectRoot: path.join(root, 'project'), flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
     probeSkillsCli: async (command, args) => { seen.push([command, args]); return { stdout: '1.8.0' }; }, resolveInstallation: async () => installation,
     resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'a'.repeat(40) }) });
-  assert.equal(result.status, 'dry_run', JSON.stringify(result)); assert.equal(seen[0][0], process.execPath); assert.match(seen[0][1][0], /npx-cli\.js$/);
+  assert.equal(result.status, 'dry_run', JSON.stringify(result)); assert.deepEqual(seen, []);
   await assert.rejects(lstat(path.join(home, '.agents', 'ake', 'update.lock')), { code: 'ENOENT' });
   await assert.rejects(lstat(path.join(home, '.agents', 'ake', 'backups')), { code: 'ENOENT' });
 });
