@@ -9,6 +9,7 @@ const checkOnly = process.argv.includes('--check');
 const packageMetadata = {
   name: 'agent-knowledge-engine',
   version: JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')).version,
+  repository: JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')).repository,
   private: true,
   type: 'module',
   engines: { node: '>=20' },

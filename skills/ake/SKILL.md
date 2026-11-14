@@ -3,6 +3,64 @@ name: ake
 description: 在实现、架构、排障、部署、风险变更前检索工程知识；实质工程任务完成且用户确认验证通过后，评估是否按四类知识流程捕获、检查、审核，并等待用户授权后发布。
 ---
 
+# AKE 使用帮助与入口路由
+
+## A. Skill 日常命令（在对话中使用）
+
+| 命令 | 功能 |
+|---|---|
+| `/ake` | 显示使用帮助（本页） |
+| `/ake help` | 显示使用帮助（与 `/ake` 完全相同） |
+| `/ake status` | 查看当前安装和版本状态（只读，不联网） |
+| `/ake update` | 检查并更新 AKE（由用户明确发起，走确定性 CLI 流程） |
+
+宿主只把 `/ake` token 交给本 Skill，后面的 `status`、`update`、`help` 是**自然语言**，不是宿主结构化参数路由。遇到歧义、或更新可能覆盖本地定制时，先询问用户，不要替用户决定。
+
+## B. CLI 安装与项目初始化（在终端使用）
+
+| 命令 | 功能 |
+|---|---|
+| `npx skills add Shakyae/agent-knowledge-engine@<完整commit> --skill ake -g` | 安装/更新到用户级 Skills 目录（Vercel Skills CLI） |
+| `ake init` | 初始化当前工作目录 |
+| `ake init --dir <project>` | 初始化指定目录 |
+| `ake status` | 查看安装状态，同时保留原有知识统计 |
+| `ake update` | 检查并更新已安装的 Skill（参数以 `ake --help` 为准） |
+
+说明：`ake` 指 AKE 源码或项目内附带的 CLI（`node scripts/ake.mjs …` 或 `node .ake/tools/scripts/ake.mjs …`）。Skill 的安装与链接由上面的 Vercel Skills CLI 负责；`npx skills update` 不会推进已固定到某个 commit 的安装，因此更新请用 `ake update`。
+
+## C. 知识管理能力
+
+- **自动检索**：任务开始、涉及实现/排障/架构/风险变更时，先检索四类知识（Agent Notes、Defensive Patterns、Postmortems、Cookbooks）。
+- **自动评估沉淀**：实质任务完成并经用户确认后，评估本次是否有可复用知识值得沉淀。
+- **手动评估当前 Session**：直接要求 AKE 评估这段工作是否值得整理（不要求先跑完自动流程）。
+- **手动整理指定经验**：明确指定「把某段经验整理成候选」，AKE 只按你的指定范围整理。
+- **查看候选**：`node .ake/tools/scripts/ake.mjs candidate list`（查看全部候选及状态）。
+- **检查审核状态**：`node .ake/tools/scripts/ake.mjs candidate show <id>` / `candidate check <id>`。
+- **发布授权流程**：候选经独立 reviewer 审核后，需**用户明确授权**才 `approve <id> --by <human> --confirm` 并 `publish <id>`；未授权时保持未发布。
+
+## 路由规则
+
+- `/ake` 或 `/ake help`：**只输出本帮助**。无参数 `/ake` 不解释为知识沉淀任务、不扫描当前 Session、不自动检索、不创建候选。
+- `/ake status`：执行 `ake status`（只读）。若当前目录没有 AKE 项目，如实报告错误，不改用其他项目。
+- `/ake update`：执行确定性 CLI 更新流程，顺序如下：
+  1. 若本 Skill 目录内存在 `resources/ake-source/scripts/ake.mjs` 且支持 `update` → 用它执行；
+  2. 否则，若当前处于 AKE 官方源码 checkout（`origin` 为官方仓库、`skills/ake` 无未提交改动）→ 用 `node <checkout>/scripts/ake.mjs update`；
+  3. 两者都不满足 → 停止并说明原因，**不得**由模型自行拼 shell、Git、复制或清理命令。
+- 更新成功后提示：DSH 每次加载/注入 Skill 时读取磁盘，**本 Session 已注入的旧内容不会自动刷新**；请在新消息中重新调用 `/ake`，若仍使用旧内容则新开 Session。**无需**重启整个 DSH。
+- 任何会覆盖用户定制、或无法确认安装目标的情况，先询问用户。
+
+## 示例
+
+1. `/ake` → 只显示本帮助（不检索、不沉淀）。
+2. 在项目目录执行 `ake init` → 初始化**当前目录**；换到别处初始化才用 `ake init --dir <project>`。
+3. `/ake status` 查看版本/安装/更新状态；需要更新时 `/ake update`（自动备份、校验、失败回滚）。
+
+## 安装、初始化与日常使用的区别
+
+- **安装**：把 Skill 放进用户级 Skills 目录，每台机器/每个用户一次。
+- **初始化**：为某个 Git 项目建立 `.ake/`（知识目录、配置、项目内 CLI），每个项目一次。
+- **日常使用**：以具体请求调用（例如 `/ake 评估这段经验是否值得沉淀`），或由 AKE 按任务阶段自动检索/沉淀；单独输入 `/ake` 只显示帮助，不触发检索或沉淀。日常使用不重复安装或初始化。
+
 # AKE knowledge operations
 
 先确定目标项目的绝对路径，并使用 Skill 加载器提供的 **本 Skill base directory** 绝对路径；不得从当前工作目录、目标项目或 AKE 源码 checkout 推导 Skill 路径。若加载环境未提供该绝对路径，先请用户提供/确认已安装 Skill 的位置，不要猜路径。
