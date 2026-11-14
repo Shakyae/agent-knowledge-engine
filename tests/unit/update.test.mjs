@@ -312,3 +312,162 @@ test('identity resolution ignores ordinary files directly under HOME', async t =
   assert.equal(resolved.canonicalPath, await realpath(canonical));
   assert.deepEqual(resolved.issues ?? [], []);
 });
+
+test('simulated Windows layout on macOS allows standard temp workspace paths and removes them', async t => {
+  const { createNpmWorkspace } = await import('../../src/lib/update.mjs');
+  const root = await makeWorkDir('ake-win-temp-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), tempRoot = path.join(home, 'AppData', 'Local', 'Temp'); await mkdir(tempRoot, { recursive: true });
+  const directory = await createNpmWorkspace(home, { platform: 'win32', tempRoot, env: {}, projectRoot: path.join(root, 'project') });
+  assert.ok(directory.startsWith(tempRoot)); await rm(directory, { recursive: true });
+  await assert.rejects(lstat(directory), { code: 'ENOENT' });
+  const local = path.join(root, 'local'), localTemp = path.join(local, 'Temp'); await mkdir(localTemp, { recursive: true });
+  const localDirectory = await createNpmWorkspace(home, { platform: 'win32', tempRoot: localTemp, env: { LOCALAPPDATA: local }, projectRoot: path.join(root, 'project') });
+  assert.ok(localDirectory.startsWith(localTemp)); await rm(localDirectory, { recursive: true });
+});
+
+test('simulated Windows layout on macOS rejects AKE/project paths and symlink temp roots while preserving POSIX HOME policy', async t => {
+  const { createNpmWorkspace } = await import('../../src/lib/update.mjs');
+  const root = await realpath(await makeWorkDir('ake-temp-policy-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), project = path.join(root, 'project'), bundle = path.join(root, 'bundle'), entry = path.join(bundle, 'scripts', 'ake.mjs');
+  await mkdir(path.dirname(entry), { recursive: true }); await writeFile(path.join(bundle, 'package.json'), JSON.stringify({ name: 'agent-knowledge-engine' })); await writeFile(entry, '');
+  for (const forbidden of [path.join(home, '.agents'), path.join(home, 'custom-agents'), project, bundle]) {
+    await mkdir(forbidden, { recursive: true });
+    await assert.rejects(createNpmWorkspace(home, { platform: 'win32', tempRoot: forbidden, env: { DSH_AGENTS_HOME: path.join(home, 'custom-agents') }, entry, projectRoot: project }), { code: 'PREFLIGHT' });
+  }
+  const outside = path.join(root, 'outside'), link = path.join(root, 'temp-link'); await mkdir(outside); await symlink(outside, link);
+  await assert.rejects(createNpmWorkspace(home, { platform: 'win32', tempRoot: link, env: {}, projectRoot: project }), /temporary root is not a real directory/);
+  const homeTemp = path.join(home, 'tmp'); await mkdir(homeTemp, { recursive: true });
+  await assert.rejects(createNpmWorkspace(home, { platform: 'darwin', tempRoot: homeTemp, env: {}, projectRoot: project }), { code: 'PREFLIGHT' });
+  const posixTemp = path.join(root, 'posix-temp'); await mkdir(posixTemp);
+  const allowed = await createNpmWorkspace(home, { platform: 'darwin', tempRoot: posixTemp, env: {}, projectRoot: project }); await rm(allowed, { recursive: true });
+});
+
+test('simulated Windows layout on macOS refuses workspace under non-Temp HOME paths before CLI work', async t => {
+  const root = await makeWorkDir('ake-win-temp-reject-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), tempRoot = path.join(home, 'Documents'); await mkdir(tempRoot, { recursive: true });
+  let probed = false, backed = false;
+  const result = await runUpdate({ home, env: cleanTestEnv({ HOME: home }), platform: 'win32', tempRoot, flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    probeSkillsCli: async () => { probed = true; }, createBackup: async () => { backed = true; } });
+  assert.equal(result.errorCode, 'PREFLIGHT'); assert.match(result.message, /^cannot create controlled temporary npm workspace:/); assert.equal(probed || backed, false);
+});
+
+test('simulated Windows layout on macOS discovers .cmd cached Skills CLI from LOCALAPPDATA cache', async t => {
+  const root = await realpath(await makeWorkDir('ake-win-cache-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), cache = path.join(root, 'local', 'npm-cache'), nodeModules = path.join(cache, '_npx', 'hash', 'node_modules');
+  const pkg = path.join(nodeModules, 'skills'); await mkdir(path.join(pkg, 'bin'), { recursive: true }); await mkdir(path.join(nodeModules, '.bin'), { recursive: true });
+  await writeFile(path.join(pkg, 'package.json'), JSON.stringify({ name: 'skills', bin: { skills: 'bin/cli.mjs' } })); await writeFile(path.join(pkg, 'bin', 'cli.mjs'), ''); await writeFile(path.join(nodeModules, '.bin', 'skills.cmd'), '@echo off');
+  const { discoverCachedSkillsCli } = await import('../../src/lib/update.mjs');
+  assert.deepEqual(await discoverCachedSkillsCli(home, { platform: 'win32', env: { LOCALAPPDATA: path.dirname(cache) } }), [path.join(pkg, 'bin', 'cli.mjs')]);
+  await rm(path.join(nodeModules, '.bin', 'skills.cmd')); await writeFile(path.join(nodeModules, '.bin', 'skills'), 'ordinary shim');
+  assert.deepEqual(await discoverCachedSkillsCli(home, { platform: 'win32', env: { LOCALAPPDATA: path.dirname(cache) } }), [path.join(pkg, 'bin', 'cli.mjs')]);
+  const custom = path.join(root, 'cache with spaces'), customModules = path.join(custom, '_npx', 'custom-hash', 'node_modules'), customPkg = path.join(customModules, 'skills');
+  await mkdir(path.join(customPkg, 'bin'), { recursive: true }); await mkdir(path.join(customModules, '.bin'), { recursive: true });
+  await writeFile(path.join(customPkg, 'package.json'), JSON.stringify({ name: 'skills', bin: { skills: 'bin/cli.mjs' } })); await writeFile(path.join(customPkg, 'bin', 'cli.mjs'), ''); await writeFile(path.join(customModules, '.bin', 'skills.cmd'), 'shim');
+  assert.deepEqual(await discoverCachedSkillsCli(home, { platform: 'win32', env: { NPM_CONFIG_CACHE: custom, LOCALAPPDATA: path.dirname(cache) } }), [path.join(customPkg, 'bin', 'cli.mjs')]);
+  const missing = path.join(root, 'missing cache');
+  assert.deepEqual(await discoverCachedSkillsCli(home, { platform: 'win32', env: { NPM_CONFIG_CACHE: missing, LOCALAPPDATA: path.dirname(cache) } }), []);
+});
+
+test('simulated Windows layout on macOS resolves global skills.cmd to node and never executes the shim', async t => {
+  const root = await makeWorkDir('ake-win-skills-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), tempRoot = path.join(root, 'temp'), bin = path.join(root, 'bin'); await mkdir(tempRoot); await mkdir(bin);
+  const pkg = path.join(bin, 'node_modules', 'skills'); await mkdir(path.join(pkg, 'bin'), { recursive: true });
+  await writeFile(path.join(bin, 'skills.cmd'), '@echo off'); await writeFile(path.join(pkg, 'package.json'), JSON.stringify({ name: 'skills', bin: { skills: 'bin/cli.mjs' } })); await writeFile(path.join(pkg, 'bin', 'cli.mjs'), '');
+  let invocation;
+  const result = await runUpdate({ home, env: { HOME: home, PATH: `${bin};`, PATHEXT: '.CMD' }, platform: 'win32', tempRoot, projectRoot: path.join(root, 'project'), flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    probeSkillsCli: async (command, args) => { invocation = [command, args]; return { stdout: '1.8.0' }; }, resolveInstallation: async () => ({ lock: { skills: { ake: { sourceType: 'local' } } } }),
+    resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: sha }) });
+  assert.equal(result.status, 'dry_run', JSON.stringify(result)); assert.equal(invocation[0], process.execPath); assert.equal(invocation[1][0], await realpath(path.join(pkg, 'bin', 'cli.mjs')));
+});
+
+test('simulated Windows layout on macOS skills.cmd probe and install share the node CLI prefix', async t => {
+  const root = await makeWorkDir('ake-win-skills-install-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), tempRoot = path.join(root, 'temp'), bin = path.join(root, 'bin'); await mkdir(tempRoot); await mkdir(bin);
+  const pkg = path.join(bin, 'node_modules', 'skills'); await mkdir(path.join(pkg, 'bin'), { recursive: true });
+  await writeFile(path.join(bin, 'skills.cmd'), '@echo off'); await writeFile(path.join(pkg, 'package.json'), JSON.stringify({ name: 'skills', bin: { skills: 'bin/cli.mjs' } })); await writeFile(path.join(pkg, 'bin', 'cli.mjs'), '');
+  const probes = [], installs = [], installation = { agentsHome: path.join(root, 'agents'), lockPath: path.join(root, 'lock'), lock: { skills: { ake: { sourceType: 'local' } } }, agentPaths: [] };
+  const result = await runUpdate({ home, env: { HOME: home, PATH: `${bin};`, PATHEXT: '.CMD' }, platform: 'win32', tempRoot, projectRoot: path.join(root, 'project'), flags: { dryRun: false, json: true, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    probeSkillsCli: async (command, args) => { probes.push([command, args]); return { stdout: '1.8.0' }; }, resolveInstallation: async () => installation,
+    resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: sha }), acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'same', createBackup: async () => ({ backupPath: '/fake' }), runSkillsAdd: async (command, args, options) => installs.push([command, args, options]), verifyInstalled: async () => {}, readAfter: async () => installation, cleanupBackups: async () => [] });
+  assert.equal(result.status, 'updated', JSON.stringify(result)); assert.equal(probes[0][0], process.execPath); assert.equal(installs[0][0], process.execPath); assert.equal(probes[0][1][0], installs[0][1][0]); assert.equal(installs[0][1][1], 'add');
+  assert.equal(installs[0][2].shell, false); assert.ok(!installs[0][0].toLowerCase().includes('cmd.exe'));
+});
+
+test('simulated Windows layout on macOS npx.cmd install retains node CLI prefix without shell', async t => {
+  const root = await makeWorkDir('ake-win-npx-install-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), tempRoot = path.join(root, 'temp'), bin = path.join(root, 'bin'); await mkdir(tempRoot); await mkdir(bin);
+  const npm = path.join(bin, 'node_modules', 'npm'); await mkdir(path.join(npm, 'bin'), { recursive: true });
+  await writeFile(path.join(bin, 'npx.cmd'), '@echo off'); await writeFile(path.join(npm, 'package.json'), JSON.stringify({ name: 'npm', bin: { npx: 'bin/npx-cli.js' } })); await writeFile(path.join(npm, 'bin', 'npx-cli.js'), '');
+  const probes = [], installs = [], installation = { agentsHome: path.join(root, 'agents'), lockPath: path.join(root, 'lock'), lock: { skills: { ake: { sourceType: 'local' } } }, agentPaths: [] };
+  const result = await runUpdate({ home, env: { HOME: home, PATH: `${bin};`, PATHEXT: '.CMD' }, platform: 'win32', tempRoot, projectRoot: path.join(root, 'project'), flags: { dryRun: false, json: true, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    probeSkillsCli: async (command, args, options) => { probes.push([command, args, options]); return command === process.execPath ? { stdout: '1.8.0' } : (() => { throw Object.assign(new Error('npx absent'), { code: 'ENOENT' }); })(); }, resolveInstallation: async () => installation,
+    resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: sha }), acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'same', createBackup: async () => ({ backupPath: '/fake' }), runSkillsAdd: async (command, args, options) => installs.push([command, args, options]), verifyInstalled: async () => {}, readAfter: async () => installation, cleanupBackups: async () => [] });
+  assert.equal(result.status, 'updated', JSON.stringify(result)); assert.equal(probes[0][0], process.execPath); assert.equal(installs[0][0], process.execPath);
+  assert.deepEqual(installs[0][1].slice(0, 4), [await realpath(path.join(npm, 'bin', 'npx-cli.js')), '--no-install', 'skills', 'add']); assert.equal(installs[0][2].shell, false); assert.ok(!installs[0][0].toLowerCase().includes('cmd.exe'));
+});
+
+test('simulated Windows layout on macOS dry-run uses node-resolved npx.cmd without shell', async t => {
+  const root = await makeWorkDir('ake-win-npx-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), tempRoot = path.join(root, 'temp'), bin = path.join(root, 'bin'); await mkdir(tempRoot); await mkdir(bin);
+  const npm = path.join(bin, 'node_modules', 'npm'); await mkdir(path.join(npm, 'bin'), { recursive: true });
+  await writeFile(path.join(bin, 'npx.cmd'), '@echo off'); await writeFile(path.join(npm, 'package.json'), JSON.stringify({ name: 'npm', bin: { npx: 'bin/npx-cli.js' } })); await writeFile(path.join(npm, 'bin', 'npx-cli.js'), '');
+  const calls = [];
+  const result = await runUpdate({ home, env: { HOME: home, PATH: `${bin};`, PATHEXT: '.CMD' }, platform: 'win32', tempRoot, projectRoot: path.join(root, 'project'), flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    probeSkillsCli: async (command, args, options) => { calls.push([command, args, options]); return { stdout: '1.8.0' }; },
+    resolveInstallation: async () => ({ lock: { skills: { ake: { sourceType: 'local' } } } }), resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: sha }) });
+  assert.equal(result.status, 'dry_run', JSON.stringify(result)); assert.equal(calls[0][0], process.execPath); assert.equal(calls[0][1][0], await realpath(path.join(npm, 'bin', 'npx-cli.js'))); assert.equal(calls[0][2].shell, undefined);
+});
+
+test('simulated Windows layout on macOS rejects Temp symlink escape with no leftover workspace', async t => {
+  const { createNpmWorkspace } = await import('../../src/lib/update.mjs');
+  const root = await realpath(await makeWorkDir('ake-win-temp-escape-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), documents = path.join(home, 'Documents'), local = path.join(home, 'AppData', 'Local'), tempAlias = path.join(local, 'Temp');
+  await mkdir(documents, { recursive: true }); await mkdir(local, { recursive: true }); await symlink(documents, tempAlias);
+  const before = await readdir(documents);
+  await assert.rejects(createNpmWorkspace(home, { platform: 'win32', tempRoot: documents, env: { LOCALAPPDATA: local }, projectRoot: path.join(root, 'project') }), { code: 'PREFLIGHT' });
+  assert.deepEqual(await readdir(documents), before);
+});
+
+test('simulated Windows layout on macOS accepts HOME symlink alias for standard Temp', async t => {
+  const { createNpmWorkspace } = await import('../../src/lib/update.mjs');
+  const root = await realpath(await makeWorkDir('ake-win-home-alias-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const realHome = path.join(root, 'real-home'), homeAlias = path.join(root, 'home-alias'), tempRoot = path.join(homeAlias, 'AppData', 'Local', 'Temp');
+  await mkdir(path.join(realHome, 'AppData', 'Local', 'Temp'), { recursive: true }); await symlink(realHome, homeAlias);
+  const directory = await createNpmWorkspace(homeAlias, { platform: 'win32', tempRoot, env: {}, projectRoot: path.join(root, 'project') });
+  await rm(directory, { recursive: true }); await assert.rejects(lstat(directory), { code: 'ENOENT' });
+});
+
+test('simulated Windows layout on macOS accepts standard Temp redirected outside HOME', async t => {
+  const { createNpmWorkspace } = await import('../../src/lib/update.mjs');
+  const root = await realpath(await makeWorkDir('ake-win-temp-outside-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), outsideTemp = path.join(root, 'outside-temp'); await mkdir(home); await mkdir(outsideTemp);
+  const directory = await createNpmWorkspace(home, { platform: 'win32', tempRoot: outsideTemp, env: { LOCALAPPDATA: path.join(home, 'AppData', 'Local') }, projectRoot: path.join(root, 'project') });
+  await rm(directory, { recursive: true }); await assert.rejects(lstat(directory), { code: 'ENOENT' });
+});
+
+test('simulated Windows layout on macOS rejects nested Temp symlink escape with no leftover workspace', async t => {
+  const { createNpmWorkspace } = await import('../../src/lib/update.mjs');
+  const root = await realpath(await makeWorkDir('ake-win-nested-escape-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), documentsNested = path.join(home, 'Documents', 'nested'), local = path.join(home, 'AppData', 'Local'), tempAlias = path.join(local, 'Temp');
+  await mkdir(documentsNested, { recursive: true }); await mkdir(local, { recursive: true }); await symlink(path.join(home, 'Documents'), tempAlias);
+  const before = await readdir(documentsNested);
+  await assert.rejects(createNpmWorkspace(home, { platform: 'win32', tempRoot: path.join(tempAlias, 'nested'), env: { LOCALAPPDATA: local }, projectRoot: path.join(root, 'project') }), { code: 'PREFLIGHT' });
+  assert.deepEqual(await readdir(documentsNested), before);
+});
+
+test('simulated Windows layout on macOS accepts Temp symlink redirected to an external nested directory', async t => {
+  const { createNpmWorkspace } = await import('../../src/lib/update.mjs');
+  const root = await realpath(await makeWorkDir('ake-win-temp-external-link-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), local = path.join(home, 'AppData', 'Local'), tempAlias = path.join(local, 'Temp'), outsideTemp = path.join(root, 'outside-temp');
+  await mkdir(local, { recursive: true }); await mkdir(path.join(outsideTemp, 'nested'), { recursive: true }); await symlink(outsideTemp, tempAlias);
+  const directory = await createNpmWorkspace(home, { platform: 'win32', tempRoot: path.join(tempAlias, 'nested'), env: { LOCALAPPDATA: local }, projectRoot: path.join(root, 'project') });
+  assert.ok(directory.startsWith(path.join(tempAlias, 'nested'))); await rm(directory, { recursive: true }); await assert.rejects(lstat(directory), { code: 'ENOENT' });
+});
+
+test('simulated Windows layout on macOS accepts an in-HOME custom LOCALAPPDATA Temp', async t => {
+  const { createNpmWorkspace } = await import('../../src/lib/update.mjs');
+  const root = await realpath(await makeWorkDir('ake-win-custom-localappdata-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), local = path.join(home, 'Local'), tempRoot = path.join(local, 'Temp'); await mkdir(tempRoot, { recursive: true });
+  const directory = await createNpmWorkspace(home, { platform: 'win32', tempRoot, env: { LOCALAPPDATA: local }, projectRoot: path.join(root, 'project') });
+  await rm(directory, { recursive: true }); await assert.rejects(lstat(directory), { code: 'ENOENT' });
+});

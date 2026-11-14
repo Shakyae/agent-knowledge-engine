@@ -37,8 +37,6 @@ async function findBundle(entry) {
     directory = parent;
   }
 }
-async function locateBundle(entry) { return (await findBundle(entry))?.package ?? null; }
-
 // Checkout bootstrap is a deliberate exception, not inferred trust: Lead 裁决 2026-11-14.
 export async function verifyCheckoutBootstrap({ entry, home, repoUrl, sourceInfo: expectedSourceInfo, gitRunner = runGit } = {}) {
   const checkout = await findBundle(entry);
@@ -203,6 +201,44 @@ async function snapshotGitTree(bare, ref, gitRunner) {
   return [...dirs].map(relativePath => ({ relativePath, type: 'directory', mode: 0o755, sha256: null, linkTarget: null })).concat(files).sort((a,b)=>a.relativePath.localeCompare(b.relativePath));
 }
 
+async function resolveWindowsCli(command, { env = process.env } = {}) {
+  const extensions = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  let match = null;
+  for (const directory of (env.PATH ?? '').split(';').filter(Boolean)) {
+    const names = extensions.map(extension => `${command}${extension}`);
+    for (const name of names) {
+      const requested = path.resolve(directory, name);
+      const actual = (await readdir(directory).catch(() => [])).find(item => item.toLowerCase() === path.basename(requested).toLowerCase());
+      if (!actual) continue;
+      const candidate = path.join(directory, actual);
+      const info = await lstat(candidate).catch(() => null);
+      if (info?.isFile() && !info.isSymbolicLink()) { match = { candidate, extension: path.extname(candidate).toLowerCase() }; break; }
+    }
+    if (match) break;
+  }
+  if (!match) return null;
+  if (['.exe', '.com'].includes(match.extension)) return { command: match.candidate, prefix: [] };
+  if (match.extension !== '.cmd') return null;
+  const directories = [...new Set([path.dirname(match.candidate), path.dirname(process.execPath)])];
+  for (const directory of directories) {
+    const packageRoot = path.join(directory, 'node_modules', command === 'npx' ? 'npm' : 'skills');
+    try {
+      const packagePath = path.join(packageRoot, 'package.json'), packageStat = await lstat(packagePath);
+      if (!packageStat.isFile() || packageStat.isSymbolicLink()) continue;
+      const pkg = JSON.parse(await readFile(packagePath, 'utf8'));
+      if (pkg.name !== (command === 'npx' ? 'npm' : 'skills')) continue;
+      const bin = command === 'npx' ? pkg.bin?.npx : (typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.skills);
+      if (typeof bin !== 'string' || path.isAbsolute(bin) || bin.split(/[\\/]/).includes('..')) continue;
+      const cliPath = path.resolve(packageRoot, bin);
+      const cliStat = await lstat(cliPath);
+      const packageReal = await realpath(packageRoot), cliReal = await realpath(cliPath);
+      if (!cliStat.isFile() || cliStat.isSymbolicLink() || !isWithinDirectory(packageReal, cliReal, 'win32')) continue;
+      return { command: process.execPath, prefix: [cliReal] };
+    } catch { /* invalid package metadata or files are unavailable */ }
+  }
+  return null;
+}
+
 function spawnCapture(command, args, options) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -270,26 +306,55 @@ export async function verifyInstalled(installation, remote) {
   for (const relative of ['SKILL.md', 'bootstrap.mjs', 'resources/ake-source/package.json', 'resources/ake-source/scripts/ake.mjs']) await readFile(path.join(installation.canonicalPath, relative));
 }
 
-function isWithinDirectory(parent, target) {
-  const relative = path.relative(path.resolve(parent), path.resolve(target));
+function isWithinDirectory(parent, target, platform = process.platform) {
+  let relative = path.relative(path.resolve(parent), path.resolve(target));
+  if (platform === 'win32') relative = relative.toLowerCase();
   return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-async function createNpmWorkspace(home) {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'ake-npm-'));
-  if (isWithinDirectory(home, directory)) {
-    await rm(directory, { recursive: true, force: true });
-    throw Object.assign(new Error('controlled npm temporary directory must not be inside HOME'), { code: 'PREFLIGHT' });
-  }
-  return directory;
+function samePath(left, right, platform) {
+  const normalize = value => path.resolve(value).replaceAll('\\', '/').replace(/\/+$/, '');
+  return platform === 'win32' ? normalize(left).toLowerCase() === normalize(right).toLowerCase() : normalize(left) === normalize(right);
 }
 
-async function stageLocalNpxCache(base, home, npmDirectory) {
-  const configured = Object.entries(base).find(([key]) => key.toLowerCase() === 'npm_config_cache')?.[1];
-  const defaultCache = process.platform === 'win32'
-    ? path.join(base.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local'), 'npm-cache')
-    : path.join(home, '.npm');
-  const cachedPackages = path.join(configured ? path.resolve(configured) : defaultCache, '_npx');
+export async function createNpmWorkspace(home, { platform = process.platform, tempRoot = os.tmpdir(), env = process.env, entry, projectRoot = process.cwd() } = {}) {
+  const tempInfo = await lstat(tempRoot).catch(() => null);
+  if (!tempInfo?.isDirectory() || tempInfo.isSymbolicLink()) throw new Error('temporary root is not a real directory');
+  const tempReal = await realpath(tempRoot);
+  const directory = await mkdtemp(path.join(tempRoot, 'ake-npm-'));
+  try {
+    const info = await lstat(directory);
+    const directoryReal = await realpath(directory);
+    if (!info.isDirectory() || info.isSymbolicLink() || !isWithinDirectory(tempRoot, directory, platform) || !isWithinDirectory(tempReal, directoryReal, platform)) throw new Error('temporary directory escaped its root');
+    const protectedRoots = [path.join(home, '.agents'), env.DSH_AGENTS_HOME, entry ? (await findBundle(entry))?.root : null, projectRoot].filter(Boolean);
+    const protectedRealRoots = await Promise.all(protectedRoots.map(root => realpath(root).catch(() => path.resolve(root))));
+    if ([...protectedRoots, ...protectedRealRoots].some(root => isWithinDirectory(root, directory, platform) || isWithinDirectory(root, directoryReal, platform))) throw new Error('temporary directory is inside a protected AKE or project path');
+    const homeReal = await realpath(home).catch(() => path.resolve(home));
+    if (platform !== 'win32') {
+      if ([home, homeReal].some(root => isWithinDirectory(root, directory, platform) || isWithinDirectory(root, directoryReal, platform))) throw new Error('controlled npm temporary directory must not be inside HOME');
+    } else if ([home, homeReal].some(root => isWithinDirectory(root, directory, platform) || isWithinDirectory(root, directoryReal, platform))) {
+      const homeRelative = path.resolve(homeReal, path.relative(path.resolve(home), path.resolve(tempRoot)));
+      const identityHolds = samePath(tempReal, homeRelative, platform) || !isWithinDirectory(homeReal, tempReal, platform);
+      const allowed = [env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Temp'), path.join(home, 'AppData', 'Local', 'Temp')].filter(Boolean);
+      const allowedPairs = await Promise.all(allowed.map(async root => ({ lexical: root, real: await realpath(root).catch(() => null) })));
+      if (!identityHolds || !allowedPairs.some(({ lexical, real }) => real && isWithinDirectory(lexical, directory, platform) && isWithinDirectory(real, directoryReal, platform))) throw new Error('temporary directory inside HOME is not a standard Temp directory');
+    }
+    return directory;
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw Object.assign(error, { code: 'PREFLIGHT' });
+  }
+}
+
+function resolveNpmCache(home, { env = process.env, platform = process.platform } = {}) {
+  const configured = Object.entries(env).find(([key]) => key.toLowerCase() === 'npm_config_cache')?.[1];
+  if (typeof configured === 'string' && configured.trim()) return path.resolve(configured);
+  if (platform === 'win32') return path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'npm-cache');
+  return path.join(home, '.npm');
+}
+
+async function stageLocalNpxCache(base, home, npmDirectory, platform = process.platform) {
+  const cachedPackages = path.join(resolveNpmCache(home, { env: base, platform }), '_npx');
   const info = await lstat(cachedPackages).catch(error => error.code === 'ENOENT' ? null : Promise.reject(error));
   if (!info || !info.isDirectory() || info.isSymbolicLink()) return false;
   const isolatedCache = path.join(npmDirectory, 'cache');
@@ -302,20 +367,22 @@ function cacheTimestampIsSane(info) {
   return Number.isFinite(info.mtimeMs) && info.mtimeMs > 0 && info.mtimeMs <= Date.now() + 5 * 60_000;
 }
 
-async function realCacheDirectory(directory) {
+async function realCacheDirectory(directory, platform = process.platform) {
   const info = await lstat(directory);
   if (!info.isDirectory() || info.isSymbolicLink()) return null;
   const resolved = await realpath(directory);
-  return resolved === path.resolve(directory) ? resolved : null;
+  return samePath(resolved, path.resolve(directory), platform) ? resolved : null;
 }
 
-export async function discoverCachedSkillsCli(home) {
+export async function discoverCachedSkillsCli(home, { env = process.env, platform = process.platform } = {}) {
   try {
-    const homeReal = await realpath(home);
-    const npmRoot = path.join(homeReal, '.npm');
-    if (!await realCacheDirectory(npmRoot)) return [];
+    const configuredCache = Object.entries(env).find(([key]) => key.toLowerCase() === 'npm_config_cache')?.[1];
+    const npmRoot = typeof configuredCache === 'string' && configuredCache.trim()
+      ? path.resolve(configuredCache)
+      : path.resolve(platform === 'win32' ? resolveNpmCache(home, { env, platform }) : path.join(await realpath(home), '.npm'));
+    if (!await realCacheDirectory(npmRoot, platform)) return [];
     const npxRoot = path.join(npmRoot, '_npx');
-    const npxReal = await realCacheDirectory(npxRoot);
+    const npxReal = await realCacheDirectory(npxRoot, platform);
     if (!npxReal) return [];
     const entries = await readdir(npxReal, { withFileTypes: true });
     const candidates = [];
@@ -323,20 +390,30 @@ export async function discoverCachedSkillsCli(home) {
       if (!entry.isDirectory() || !/^[A-Za-z0-9_-]+$/.test(entry.name)) continue;
       try {
         const hashRoot = path.join(npxReal, entry.name);
-        const hashReal = await realCacheDirectory(hashRoot);
+        const hashReal = await realCacheDirectory(hashRoot, platform);
         if (!hashReal) continue;
         const nodeModules = path.join(hashReal, 'node_modules');
         const packageDirectory = path.join(nodeModules, 'skills');
         const binDirectory = path.join(nodeModules, '.bin');
-        const packageReal = await realCacheDirectory(packageDirectory);
-        const binReal = await realCacheDirectory(binDirectory);
-        const skillsBinReal = await realCacheDirectory(path.join(packageDirectory, 'bin'));
-        if (!await realCacheDirectory(nodeModules) || !packageReal || !binReal || !skillsBinReal) continue;
+        const packageReal = await realCacheDirectory(packageDirectory, platform);
+        const binReal = await realCacheDirectory(binDirectory, platform);
+        const skillsBinReal = await realCacheDirectory(path.join(packageDirectory, 'bin'), platform);
+        if (!await realCacheDirectory(nodeModules, platform) || !packageReal || !binReal || !skillsBinReal) continue;
 
-        const binEntry = path.join(binReal, 'skills');
-        const binInfo = await lstat(binEntry);
-        if ((!binInfo.isFile() && !binInfo.isSymbolicLink()) || !cacheTimestampIsSane(binInfo)) continue;
-        if (binInfo.isSymbolicLink() && await readlink(binEntry) !== '../skills/bin/cli.mjs') continue;
+        let binEntry = path.join(binReal, platform === 'win32' ? 'skills.cmd' : 'skills');
+        let binInfo;
+        if (platform === 'win32') {
+          for (const name of ['skills.cmd', 'skills']) {
+            binEntry = path.join(binReal, name);
+            binInfo = await lstat(binEntry).catch(() => null);
+            if (binInfo?.isFile() && !binInfo.isSymbolicLink() && cacheTimestampIsSane(binInfo)) break;
+          }
+          if (!binInfo?.isFile() || binInfo.isSymbolicLink() || !cacheTimestampIsSane(binInfo)) continue;
+        } else {
+          binInfo = await lstat(binEntry);
+          if ((!binInfo.isFile() && !binInfo.isSymbolicLink()) || !cacheTimestampIsSane(binInfo)) continue;
+          if (binInfo.isSymbolicLink() && await readlink(binEntry) !== '../skills/bin/cli.mjs') continue;
+        }
 
         const packageJsonPath = path.join(packageReal, 'package.json');
         const packageInfo = await lstat(packageJsonPath);
@@ -350,9 +427,11 @@ export async function discoverCachedSkillsCli(home) {
         if (!cliInfo.isFile() || cliInfo.isSymbolicLink() || !cacheTimestampIsSane(cliInfo)) continue;
         const cliPath = await realpath(expectedCli);
         if (cliPath !== path.join(packageReal, 'bin', 'cli.mjs') || path.resolve(packageReal, packageBin) !== cliPath || !isWithinDirectory(packageReal, cliPath)) continue;
-        if (binInfo.isSymbolicLink()) {
-          if (await realpath(binEntry) !== cliPath) continue;
-        } else if (!(await readFile(binEntry)).equals(await readFile(cliPath))) continue;
+        if (platform !== 'win32') {
+          if (binInfo.isSymbolicLink()) {
+            if (await realpath(binEntry) !== cliPath) continue;
+          } else if (!(await readFile(binEntry)).equals(await readFile(cliPath))) continue;
+        }
         candidates.push(cliPath);
       } catch { /* unreadable, anomalous, or malformed cache entries are unavailable */ }
     }
@@ -404,29 +483,42 @@ export async function runUpdate(options = {}) {
   let heldLock = null, backup = null, installation, effectsBefore, installStarted = false, npmDirectory = null, skillsEnvironment = null;
   const report = (status, stage, code, message) => Object.assign(output, { status, stage, errorCode: code, message });
   try {
-    const pkg = options.package ?? await locateBundle(entry);
+    const bundle = await findBundle(entry);
+    const pkg = options.package ?? bundle?.package;
     if (!pkg?.repository?.url) throw Object.assign(new Error('AKE bundle package.json has no repository.url'), { code: 'UNTRUSTED_SOURCE' });
     const source = resolveInstallSource(pkg.repository.url); output.sourceUrl = source.sourceUrl;
     installationOptions = { ...installationOptions, sourceInfo: source };
-    try { npmDirectory = await createNpmWorkspace(options.home ?? os.homedir()); }
-    catch (error) { throw Object.assign(new Error(`cannot create controlled temporary npm workspace: ${error.message}`), { code: 'PREFLIGHT' }); }
+    const platform = options.platform ?? process.platform;
+    const home = options.home ?? os.homedir();
     const baseEnvironment = options.env ?? process.env;
-    skillsEnvironment = makeSkillsEnvironment(baseEnvironment, options.home ?? os.homedir(), npmDirectory);
+    try { npmDirectory = await createNpmWorkspace(home, { platform, tempRoot: options.tempRoot ?? os.tmpdir(), env: baseEnvironment, entry, projectRoot: options.projectRoot ?? process.cwd() }); }
+    catch (error) { throw Object.assign(new Error(`cannot create controlled temporary npm workspace: ${error.message}`), { code: 'PREFLIGHT' }); }
+    skillsEnvironment = makeSkillsEnvironment(baseEnvironment, home, npmDirectory);
     const probeEnvironment = makeSkillsEnvironment(baseEnvironment, npmDirectory, npmDirectory);
     let cli = options.skillsCli ?? 'skills', cliPrefix = [];
     const probeSkillsCli = options.probeSkillsCli ?? ((command, args, env) => spawnCapture(command, args, { env, shell: false }));
-    try { await probeSkillsCli(cli, ['--version'], probeEnvironment); }
+    try {
+      if (platform === 'win32' && !options.skillsCli) {
+        const resolved = await resolveWindowsCli('skills', { env: baseEnvironment });
+        if (!resolved) throw Object.assign(new Error('spawn skills ENOENT'), { code: 'ENOENT' });
+        cli = resolved.command; cliPrefix = resolved.prefix;
+      }
+      await probeSkillsCli(cli, [...cliPrefix, '--version'], probeEnvironment);
+    }
     catch (error) {
       if (error.code === 'ENOENT') {
         try {
-          await stageLocalNpxCache(baseEnvironment, options.home ?? os.homedir(), npmDirectory);
-          await probeSkillsCli('npx', ['--no-install', 'skills', '--version'], probeEnvironment);
-          cli = 'npx'; cliPrefix = ['--no-install', 'skills'];
+          await stageLocalNpxCache(baseEnvironment, home, npmDirectory, platform);
+          const npx = platform === 'win32' ? await resolveWindowsCli('npx', { env: baseEnvironment }) : { command: 'npx', prefix: [] };
+          if (!npx) throw Object.assign(new Error('spawn npx ENOENT'), { code: 'ENOENT' });
+          const npxArgs = [...npx.prefix, '--no-install', 'skills', '--version'];
+          await probeSkillsCli(npx.command, npxArgs, probeEnvironment);
+          cli = npx.command; cliPrefix = [...npx.prefix, '--no-install', 'skills'];
           output.warnings.push('通过 npx --no-install 使用本地 Skills CLI 缓存；这不证明其版本或完整性，也未自动下载');
         } catch (fallbackError) {
           writeDiagnostic(options, `npx --no-install skills --version failed: ${fallbackError.stderr ?? fallbackError.message}`);
           const runnable = [];
-          const candidates = await (options.discoverSkillsCli ?? discoverCachedSkillsCli)(options.home ?? os.homedir()).catch(() => []);
+          const candidates = await (options.discoverSkillsCli ?? discoverCachedSkillsCli)(home, { env: baseEnvironment, platform }).catch(() => []);
           for (const candidate of candidates) {
             try {
               const result = await probeSkillsCli(process.execPath, [candidate, '--version'], probeEnvironment);

@@ -270,3 +270,18 @@ test('isolated bare repository fixture and PATH Skills stub exercise update disp
   assert.equal(siblingMutation.errorCode, 'ROLLBACK_FAILED'); assert.equal(siblingMutation.rollback, 'failed'); assert.ok(siblingMutation.backupPath);
   assert.equal(await readFile(path.join(siblingSkill, 'keep'), 'utf8'), 'changed');
 });
+
+test('simulated Windows layout on macOS; not a real Windows run: dry-run uses isolated temp and leaves installation untouched', async t => {
+  const root = await makeWorkDir('ake-win-dry-run-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), tempRoot = path.join(root, 'temp'), bin = path.join(root, 'bin'); await mkdir(home); await mkdir(tempRoot); await mkdir(bin);
+  const npm = path.join(bin, 'node_modules', 'npm'); await mkdir(path.join(npm, 'bin'), { recursive: true });
+  await writeFile(path.join(bin, 'npx.cmd'), '@echo off'); await writeFile(path.join(npm, 'package.json'), JSON.stringify({ name: 'npm', bin: { npx: 'bin/npx-cli.js' } })); await writeFile(path.join(npm, 'bin', 'npx-cli.js'), '');
+  const installation = { agentsHome: path.join(home, '.agents'), lockPath: path.join(home, '.agents', '.skill-lock.json'), lock: { skills: { ake: { sourceType: 'local' } } } };
+  const seen = [];
+  const result = await runUpdate({ home, env: { HOME: home, PATH: `${bin};`, PATHEXT: '.CMD' }, platform: 'win32', tempRoot, projectRoot: path.join(root, 'project'), flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    probeSkillsCli: async (command, args) => { seen.push([command, args]); return { stdout: '1.8.0' }; }, resolveInstallation: async () => installation,
+    resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'a'.repeat(40) }) });
+  assert.equal(result.status, 'dry_run', JSON.stringify(result)); assert.equal(seen[0][0], process.execPath); assert.match(seen[0][1][0], /npx-cli\.js$/);
+  await assert.rejects(lstat(path.join(home, '.agents', 'ake', 'update.lock')), { code: 'ENOENT' });
+  await assert.rejects(lstat(path.join(home, '.agents', 'ake', 'backups')), { code: 'ENOENT' });
+});
