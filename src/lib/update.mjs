@@ -95,15 +95,19 @@ export async function resolveInstallation({ home = os.homedir(), env = process.e
     else issues.push(`unsupported additional AKE path: ${claude}`);
   } catch (e) { if (e.code !== 'ENOENT') issues.push(`cannot inspect ${claude}`); }
   const allHomes = [path.join(home, '.agents', 'skills'), path.join(home, '.claude', 'skills')];
-  for (const name of await readdir(home).catch(error => error.code === 'ENOENT' ? [] : Promise.reject(error))) {
-    const candidate = path.join(home, name, 'skills', 'ake');
+  const absent = error => error.code === 'ENOENT' || error.code === 'ENOTDIR';
+  for (const name of await readdir(home).catch(error => absent(error) ? [] : Promise.reject(error))) {
+    const owner = path.join(home, name);
+    const ownerInfo = await lstat(owner).catch(() => null);
+    if (!ownerInfo || (!ownerInfo.isDirectory() && !ownerInfo.isSymbolicLink())) continue;
+    const candidate = path.join(owner, 'skills', 'ake');
     if (candidate === canonical || candidate === claude || (name === '.agents' && await realpath(candidate).catch(() => null) === canonicalInfo)) continue;
     try { await lstat(candidate); issues.push(`unsupported additional AKE path: ${candidate}`); }
-    catch (error) { if (error.code !== 'ENOENT') issues.push(`cannot inspect ${candidate}`); }
+    catch (error) { if (!absent(error)) issues.push(`cannot inspect ${candidate}`); }
   }
   for (const skillsDir of allHomes) {
     try { for (const name of await readdir(skillsDir)) if (name.toLowerCase() === 'ake' && path.join(skillsDir, name) !== claude && await realpath(path.join(skillsDir, name)).catch(() => null) !== canonicalInfo) issues.push(`unsupported AKE installation path: ${path.join(skillsDir, name)}`); }
-    catch (e) { if (e.code !== 'ENOENT') issues.push(`cannot inspect ${skillsDir}`); }
+    catch (e) { if (!absent(e)) issues.push(`cannot inspect ${skillsDir}`); }
   }
   let lockBytes, lock;
   try { const lockInfo = await lstat(lockPath); if (!lockInfo.isFile() || lockInfo.isSymbolicLink()) throw new Error('Skills lock is not a regular file'); lockBytes = await readFile(lockPath); lock = JSON.parse(lockBytes.toString('utf8')); }

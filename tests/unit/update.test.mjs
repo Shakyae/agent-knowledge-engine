@@ -292,3 +292,23 @@ test('cached Skills CLI discovery rejects escaped and non-cli symlinks and anoma
   const future = new Date(Date.now() + 10 * 60_000); await utimes(cliPath, future, future);
   assert.deepEqual(await discoverCachedSkillsCli(home), []);
 });
+
+test('identity resolution ignores ordinary files directly under HOME', async t => {
+  const root = await makeWorkDir('ake-home-files-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home');
+  const canonical = path.join(home, '.agents', 'skills', 'ake');
+  const bundleRoot = path.join(canonical, 'resources', 'ake-source');
+  const entry = path.join(bundleRoot, 'scripts', 'ake.mjs');
+  await mkdir(path.dirname(entry), { recursive: true });
+  await writeFile(entry, '#!/usr/bin/env node\n');
+  await writeFile(path.join(bundleRoot, 'package.json'), JSON.stringify({ name: 'agent-knowledge-engine', repository: { url: 'https://github.com/o/r.git' } }));
+  await writeFile(path.join(home, '.zshrc'), 'export PATH="$HOME/bin:$PATH"\n');
+  await writeFile(path.join(home, '.DS_Store'), 'binary noise');
+  await mkdir(path.join(home, '.claude', 'skills'), { recursive: true });
+  await symlink(canonical, path.join(home, '.claude', 'skills', 'ake'));
+  await writeFile(path.join(home, '.agents', '.skill-lock.json'), JSON.stringify({ version: 3, skills: { ake: { source: '/tmp/local', sourceType: 'local' } } }));
+  const resolved = await resolveInstallation({ home, entry });
+  assert.equal(resolved.scope, 'user');
+  assert.equal(resolved.canonicalPath, await realpath(canonical));
+  assert.deepEqual(resolved.issues ?? [], []);
+});
