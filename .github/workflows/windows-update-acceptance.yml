@@ -15,6 +15,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Diagnose Windows npm layout
+        shell: pwsh
+        run: |
+          node -e "const fs=require('fs'),p=require('path'); const e={...process.env}; const keys=Object.keys(e).filter(k=>/^path$|^pathext$/i.test(k)); const dirs=(e[keys.find(k=>/^path$/i.test(k))]||'').split(';'); console.log('environment keys:',keys.join(','),'node:',process.execPath); for(const d of dirs){for(const n of ['npm.cmd','npm.exe','npm.bat']){const f=p.join(d,n); if(fs.existsSync(f)) console.log('candidate:',f,'real:',fs.realpathSync(f));}} const r=p.join(p.dirname(process.execPath),'node_modules','npm'); console.log('node sibling npm package:',r,'metadata:',fs.existsSync(p.join(r,'package.json')),'cli:',fs.existsSync(p.join(r,'bin','npm-cli.js')));"
       - name: Run native Windows W1-W4 integration acceptance
         shell: pwsh
         run: |
