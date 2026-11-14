@@ -294,6 +294,82 @@ async function stageLocalNpxCache(base, home, npmDirectory) {
   return true;
 }
 
+function cacheTimestampIsSane(info) {
+  return Number.isFinite(info.mtimeMs) && info.mtimeMs > 0 && info.mtimeMs <= Date.now() + 5 * 60_000;
+}
+
+async function realCacheDirectory(directory) {
+  const info = await lstat(directory);
+  if (!info.isDirectory() || info.isSymbolicLink()) return null;
+  const resolved = await realpath(directory);
+  return resolved === path.resolve(directory) ? resolved : null;
+}
+
+export async function discoverCachedSkillsCli(home) {
+  try {
+    const homeReal = await realpath(home);
+    const npmRoot = path.join(homeReal, '.npm');
+    if (!await realCacheDirectory(npmRoot)) return [];
+    const npxRoot = path.join(npmRoot, '_npx');
+    const npxReal = await realCacheDirectory(npxRoot);
+    if (!npxReal) return [];
+    const entries = await readdir(npxReal, { withFileTypes: true });
+    const candidates = [];
+    for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      if (!entry.isDirectory() || !/^[A-Za-z0-9_-]+$/.test(entry.name)) continue;
+      try {
+        const hashRoot = path.join(npxReal, entry.name);
+        const hashReal = await realCacheDirectory(hashRoot);
+        if (!hashReal) continue;
+        const nodeModules = path.join(hashReal, 'node_modules');
+        const packageDirectory = path.join(nodeModules, 'skills');
+        const binDirectory = path.join(nodeModules, '.bin');
+        const packageReal = await realCacheDirectory(packageDirectory);
+        const binReal = await realCacheDirectory(binDirectory);
+        const skillsBinReal = await realCacheDirectory(path.join(packageDirectory, 'bin'));
+        if (!await realCacheDirectory(nodeModules) || !packageReal || !binReal || !skillsBinReal) continue;
+
+        const binEntry = path.join(binReal, 'skills');
+        const binInfo = await lstat(binEntry);
+        if ((!binInfo.isFile() && !binInfo.isSymbolicLink()) || !cacheTimestampIsSane(binInfo)) continue;
+        if (binInfo.isSymbolicLink() && await readlink(binEntry) !== '../skills/bin/cli.mjs') continue;
+
+        const packageJsonPath = path.join(packageReal, 'package.json');
+        const packageInfo = await lstat(packageJsonPath);
+        if (!packageInfo.isFile() || packageInfo.isSymbolicLink() || !cacheTimestampIsSane(packageInfo)) continue;
+        const packageJson = JSON.parse(await readFile(packageJsonPath, 'utf8'));
+        const packageBin = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.skills;
+        if (packageJson.name !== 'skills' || typeof packageBin !== 'string' || path.isAbsolute(packageBin) || packageBin.split(/[\\/]/).includes('..')) continue;
+
+        const expectedCli = path.join(skillsBinReal, 'cli.mjs');
+        const cliInfo = await lstat(expectedCli);
+        if (!cliInfo.isFile() || cliInfo.isSymbolicLink() || !cacheTimestampIsSane(cliInfo)) continue;
+        const cliPath = await realpath(expectedCli);
+        if (cliPath !== path.join(packageReal, 'bin', 'cli.mjs') || path.resolve(packageReal, packageBin) !== cliPath || !isWithinDirectory(packageReal, cliPath)) continue;
+        if (binInfo.isSymbolicLink()) {
+          if (await realpath(binEntry) !== cliPath) continue;
+        } else if (!(await readFile(binEntry)).equals(await readFile(cliPath))) continue;
+        candidates.push(cliPath);
+      } catch { /* unreadable, anomalous, or malformed cache entries are unavailable */ }
+    }
+    return [...new Set(candidates)];
+  } catch { return []; }
+}
+
+function parseCachedCliVersion(output) {
+  const match = String(output).match(/\bv?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+  return match ? { core: match.slice(1, 4).map(Number), prerelease: match[4] ?? '' } : null;
+}
+
+function compareCachedCliVersions(left, right) {
+  for (let index = 0; index < 3; index++) if (left.version.core[index] !== right.version.core[index]) return right.version.core[index] - left.version.core[index];
+  if (!left.version.prerelease && right.version.prerelease) return -1;
+  if (left.version.prerelease && !right.version.prerelease) return 1;
+  const prereleaseOrder = left.version.prerelease.localeCompare(right.version.prerelease);
+  if (prereleaseOrder) return prereleaseOrder;
+  return left.cliPath < right.cliPath ? -1 : left.cliPath > right.cliPath ? 1 : 0;
+}
+
 function makeSkillsEnvironment(base, home, npmDirectory) {
   const env = { ...base };
   for (const key of Object.keys(env)) if (/^(GIT_.*|npm_config_.*)$/i.test(key)) delete env[key];
@@ -345,7 +421,20 @@ export async function runUpdate(options = {}) {
           output.warnings.push('通过 npx --no-install 使用本地 Skills CLI 缓存；这不证明其版本或完整性，也未自动下载');
         } catch (fallbackError) {
           writeDiagnostic(options, `npx --no-install skills --version failed: ${fallbackError.stderr ?? fallbackError.message}`);
-          throw Object.assign(new Error('Skills CLI unavailable; npx --no-install fallback was attempted without downloading and failed. 请先安装 Vercel Skills CLI（例如 npm i -g skills），本次未自动下载。'), { code: 'PREFLIGHT' });
+          const runnable = [];
+          const candidates = await (options.discoverSkillsCli ?? discoverCachedSkillsCli)(options.home ?? os.homedir()).catch(() => []);
+          for (const candidate of candidates) {
+            try {
+              const result = await probeSkillsCli(process.execPath, [candidate, '--version'], probeEnvironment);
+              const version = parseCachedCliVersion(result?.stdout);
+              if (version) runnable.push({ cliPath: candidate, version });
+            } catch (candidateError) { writeDiagnostic(options, `cached Skills CLI probe failed for ${candidate}: ${candidateError.stderr ?? candidateError.message}`); }
+          }
+          runnable.sort(compareCachedCliVersions);
+          const discovered = runnable[0]?.cliPath;
+          if (!discovered) throw Object.assign(new Error('Skills CLI unavailable; npx --no-install fallback was attempted without downloading and failed. 请先安装 Vercel Skills CLI（例如 npm i -g skills），本次未自动下载。'), { code: 'PREFLIGHT' });
+          cli = process.execPath; cliPrefix = [discovered];
+          output.warnings.push('使用本机 npx 缓存中的 Skills CLI（只读发现）；版本和完整性未验证');
         }
       } else {
         writeDiagnostic(options, `skills --version failed: ${error.stderr ?? error.message}`);

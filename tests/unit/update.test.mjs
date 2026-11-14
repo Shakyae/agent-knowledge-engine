@@ -1,15 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseUpdateArgs, resolveInstallSource, updateExitCode, runUpdate, detectCustomization, resolveInstallation, verifyInstalled } from '../../src/lib/update.mjs';
-import { mkdir, writeFile, readFile, rm, symlink, cp } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, lstat, rm, symlink, cp, utimes } from 'node:fs/promises';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { runGit, resolveRemote } from '../../src/lib/git-remote.mjs';
 import { assertOutsideGitWorkTree, cleanTestEnv, tempRoot } from '../helpers/test-env.mjs';
 
 const sha = 'a'.repeat(40);
 async function makeWorkDir(prefix) { return tempRoot(prefix); }
+async function makeCachedSkillsCli(home, hash, version, binTarget = '../skills/bin/cli.mjs') {
+  const nodeModules = path.join(home, '.npm', '_npx', hash, 'node_modules');
+  const packageRoot = path.join(nodeModules, 'skills'), cliPath = path.join(packageRoot, 'bin', 'cli.mjs');
+  await mkdir(path.dirname(cliPath), { recursive: true });
+  await writeFile(path.join(packageRoot, 'package.json'), JSON.stringify({ name: 'skills', version, bin: { skills: 'bin/cli.mjs' } }));
+  await writeFile(cliPath, `import fs from 'node:fs'; if (process.argv[2] === '--version') process.stdout.write(${JSON.stringify(version)} + '\\n'); else fs.appendFileSync(process.env.AKE_CACHE_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');`);
+  await mkdir(path.join(nodeModules, '.bin'), { recursive: true });
+  await symlink(binTarget, path.join(nodeModules, '.bin', 'skills'));
+  return cliPath;
+}
 test('update arguments are allowlisted and duplicates rejected', () => {
   assert.deepEqual(parseUpdateArgs(['--dry-run', '--json']), { dryRun: true, json: true, acceptCustomized: false });
   assert.throws(() => parseUpdateArgs(['--force']), { code: 'USAGE' });
@@ -44,12 +54,13 @@ test('missing PATH skills falls back to npx --no-install using a staged local ca
 
 test('missing PATH skills and unavailable npx cache remain PREFLIGHT failures', async t => {
   const root = await makeWorkDir('ake-empty-npx-cache-'); t.after(() => rm(root, { recursive: true, force: true })); const home = path.join(root, 'home'); await mkdir(home);
-  const calls = []; let installed = false;
+  const calls = []; let installed = false; const homeBefore = await readdir(home);
   const result = await runUpdate({ home, env: cleanTestEnv({ HOME: home }), flags: { dryRun: true, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } },
     probeSkillsCli: async command => { calls.push(command); throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: 'ENOENT' }); },
     resolveInstallation: async () => { throw new Error('identity should not be read'); }, runSkillsAdd: async () => { installed = true; } });
   assert.deepEqual(calls, ['skills', 'npx']); assert.equal(result.errorCode, 'PREFLIGHT'); assert.equal(updateExitCode(result), 1);
   assert.match(result.message, /npx --no-install fallback was attempted/); assert.match(result.message, /Vercel Skills CLI/); assert.match(result.message, /本次未自动下载/); assert.equal(installed, false);
+  assert.deepEqual(await readdir(home), homeBefore);
 });
 
 test('customization compares installed tree with old pinned ref, not new target', async t => {
@@ -224,4 +235,60 @@ test('rollback failure is surfaced and backup path retained', async () => {
     acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'baseline', createBackup: async () => ({ backupPath: '/tmp/keep-backup', manifest: {}, originalTree: [], originalLockBytes: null }),
     runSkillsAdd: async () => { throw new Error('install broke'); }, restoreBackup: async () => { throw new Error('restore broken'); } });
   assert.equal(result.errorCode, 'ROLLBACK_FAILED'); assert.equal(result.backupPath, '/tmp/keep-backup'); assert.equal(result.rollback, 'failed');
+});
+
+test('cached npx Skills CLI is discovered read-only, sorted by version, and invoked through node', async t => {
+  const root = await makeWorkDir('ake-cached-cli-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), capture = path.join(root, 'install-argv.json'); await mkdir(home);
+  const olderCli = await makeCachedSkillsCli(home, 'cache-a', '1.8.1');
+  const newerCli = await makeCachedSkillsCli(home, 'cache-b', '1.9.0');
+  const beforeCli = await readFile(newerCli);
+  const installation = { agentsHome: path.join(home, '.agents'), canonicalPath: path.join(home, '.agents/skills/ake'), loadPath: path.join(home, '.agents/skills/ake'), scope: 'user', mode: 'canonical', sourceType: 'local', agentPaths: [], lockPath: path.join(home, '.agents/.skill-lock.json'), lock: { skills: { ake: { sourceType: 'local' } } } };
+  const probes = [], invocations = []; let isolatedCache;
+  const env = cleanTestEnv({ HOME: home, AKE_CACHE_CAPTURE: capture });
+  const result = await runUpdate({ home, env, flags: { dryRun: false, json: true, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    probeSkillsCli: async (command, args, probeEnv) => {
+      probes.push([command, args]);
+      if (command === 'skills') throw Object.assign(new Error('spawn skills ENOENT'), { code: 'ENOENT' });
+      if (command === 'npx') throw Object.assign(new Error('npx canceled due to missing packages'), { code: 'INSTALL' });
+      assert.equal(command, process.execPath);
+      const response = spawnSync(command, args, { encoding: 'utf8', env: probeEnv });
+      if (response.error) throw response.error;
+      if (response.status !== 0) throw Object.assign(new Error(response.stderr), { code: 'INSTALL', stderr: response.stderr });
+      return response;
+    },
+    resolveInstallation: async () => installation,
+    resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: sha, entries: [] }),
+    acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'baseline', createBackup: async () => ({ backupPath: '/tests/.work/fake-backup' }),
+    runSkillsAdd: async (command, args, options) => {
+      invocations.push([command, args]); isolatedCache = options.env.npm_config_cache;
+      const response = spawnSync(command, args, { encoding: 'utf8', env: options.env });
+      if (response.error) throw response.error;
+      if (response.status !== 0) throw Object.assign(new Error(response.stderr), { code: 'INSTALL', stderr: response.stderr });
+    }, verifyInstalled: async () => {}, readAfter: async () => installation, cleanupBackups: async () => [] });
+  assert.equal(result.status, 'updated', JSON.stringify(result));
+  assert.deepEqual(probes.map(p => p[0]), ['skills', 'npx', process.execPath, process.execPath]);
+  assert.equal(await realpath(probes[2][1][0]), await realpath(olderCli)); assert.equal(await realpath(probes[3][1][0]), await realpath(newerCli));
+  assert.equal(invocations.length, 1); assert.equal(invocations[0][0], process.execPath);
+  assert.equal(await realpath(invocations[0][1][0]), await realpath(newerCli)); assert.equal(invocations[0][1][1], 'add');
+  assert.deepEqual(JSON.parse(await readFile(capture, 'utf8')), invocations[0][1].slice(1));
+  assert.match(result.warnings.join(' '), /使用本机 npx 缓存中的 Skills CLI（只读发现）/);
+  assert.doesNotMatch(result.warnings.join(' '), /已验证版本|完整性已验证/);
+  assert.deepEqual(await readFile(newerCli), beforeCli);
+  await assert.rejects(lstat(path.dirname(isolatedCache)), { code: 'ENOENT' });
+});
+
+test('cached Skills CLI discovery rejects escaped and non-cli symlinks and anomalous timestamps', async t => {
+  const root = await makeWorkDir('ake-cached-cli-invalid-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), outside = path.join(root, 'outside.mjs'); await mkdir(home); await writeFile(outside, 'process.exit(0);');
+  const cliPath = await makeCachedSkillsCli(home, 'evil', '1.8.1', outside);
+  const binPath = path.join(home, '.npm', '_npx', 'evil', 'node_modules', '.bin', 'skills');
+  const { discoverCachedSkillsCli } = await import('../../src/lib/update.mjs');
+  assert.deepEqual(await discoverCachedSkillsCli(home), []);
+  await rm(binPath); await writeFile(path.join(path.dirname(cliPath), 'not-cli.mjs'), 'process.exit(0);');
+  await symlink('../skills/bin/not-cli.mjs', binPath);
+  assert.deepEqual(await discoverCachedSkillsCli(home), []);
+  await rm(binPath); await symlink('../skills/bin/cli.mjs', binPath);
+  const future = new Date(Date.now() + 10 * 60_000); await utimes(cliPath, future, future);
+  assert.deepEqual(await discoverCachedSkillsCli(home), []);
 });
