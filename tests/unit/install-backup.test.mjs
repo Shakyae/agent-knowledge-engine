@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, writeFile, readFile, readlink, lstat, rm, cp, symlink } from 'node:fs/promises';
-import { acquireLock, createBackup, restoreBackup, validateBackup, cleanupBackups } from '../../src/lib/install-backup.mjs';
+import { mkdir, writeFile, readFile, readlink, lstat, rm, cp, symlink, chmod } from 'node:fs/promises';
+import { acquireLock, backupModesMatch, createBackup, restoreBackup, validateBackup, cleanupBackups } from '../../src/lib/install-backup.mjs';
 import { tempRoot } from '../helpers/test-env.mjs';
 
 async function fixture(t) { const home = await tempRoot('ake-backup-test-'); t.after(() => rm(home, { recursive: true, force: true })); return home; }
@@ -32,6 +32,23 @@ test('backup restores snapshotted files and links while preserving post-snapshot
   assert.deepEqual(await readFile(lockPath), lockBytes);
   await writeFile(path.join(backup.backupPath, 'data', 'canonical', 'sub', 'custom.txt'), 'tampered');
   await assert.rejects(validateBackup(backup.backupPath), /checksum mismatch/);
+});
+
+test('backup mode comparison preserves POSIX mode checks and normalizes Windows writable state', () => {
+  assert.equal(backupModesMatch(0o600, 0o666, 'win32'), true);
+  assert.equal(backupModesMatch(0o600, 0o444, 'win32'), false);
+  assert.equal(backupModesMatch(0o600, 0o666, 'linux'), false);
+});
+
+test('backup validation rejects read-only mode drift', async t => {
+  const home = await fixture(t), agentsHome = path.join(home, '.agents'), canonical = path.join(agentsHome, 'skills', 'ake'), lockPath = path.join(agentsHome, '.skill-lock.json');
+  await mkdir(canonical, { recursive: true }); await writeFile(path.join(canonical, 'SKILL.md'), '# ake'); await writeFile(lockPath, '{"skills":{"ake":{"sourceType":"local"}}}');
+  const installation = { canonicalPath: canonical, loadPath: canonical, scope: 'user', mode: 'canonical', agentPaths: [] };
+  const backup = await createBackup({ agentsHome, installation, lockPath, targetCommit: 'd'.repeat(40) });
+  assert.equal((await validateBackup(backup.backupPath)).lockExisted, true);
+  const backedUpLock = path.join(backup.backupPath, 'data', 'lock.json');
+  await chmod(backedUpLock, 0o444);
+  await assert.rejects(validateBackup(backup.backupPath), error => error.code === 'BACKUP' && /backup mode mismatch: lock\.json/.test(error.message));
 });
 
 test('backup validation rejects unlisted and missing data-tree entries', async t => {

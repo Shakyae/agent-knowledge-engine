@@ -5,6 +5,13 @@ import { lstat, readdir, readFile, writeFile, mkdir, copyFile, symlink, readlink
 
 const MARKER = 'ake-skill-backup';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+// Windows exposes the read-only flag, not POSIX permission classes; retain writable/read-only validation there.
+function normalizeBackupMode(mode, platform = process.platform) {
+  return platform === 'win32' ? Number(Boolean(mode & 0o200)) : mode;
+}
+export function backupModesMatch(expected, actual, platform = process.platform) {
+  return normalizeBackupMode(expected, platform) === normalizeBackupMode(actual, platform);
+}
 const exists = async p => { try { return await lstat(p); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 async function ensureDirectory(target, { create = false } = {}) {
   const info = await exists(target);
@@ -175,7 +182,7 @@ async function validateBackupEntries(directory) {
     const item = path.join(directory, ...parts);
     const info = await lstat(item);
     if ((entry.type === 'file' && !info.isFile()) || (entry.type === 'directory' && !info.isDirectory()) || (entry.type === 'symlink' && !info.isSymbolicLink())) throw new Error(`backup entry type mismatch: ${entry.relativePath}`);
-    if ((info.mode & 0o777) !== entry.mode) throw new Error(`backup mode mismatch: ${entry.relativePath}`);
+    if (!backupModesMatch(entry.mode, info.mode & 0o777)) throw new Error(`backup mode mismatch: ${entry.relativePath}`);
     if (entry.type === 'file' && sha256(await readFile(item)) !== entry.sha256) throw new Error(`backup checksum mismatch: ${entry.relativePath}`);
     if (entry.type === 'symlink' && await readlink(item) !== entry.linkTarget) throw new Error(`backup link mismatch: ${entry.relativePath}`);
   }
@@ -183,7 +190,7 @@ async function validateBackupEntries(directory) {
   const dataInfo = await lstat(dataDirectory);
   if (!dataInfo.isDirectory() || dataInfo.isSymbolicLink()) throw new Error('backup data is not a real directory');
   const actualEntries = await snapshotTree(dataDirectory);
-  const normalize = entries => entries.map(({ relativePath, type, mode, sha256: digest = null, linkTarget = null }) => [relativePath, type, mode, digest, linkTarget]).sort((a, b) => a[0].localeCompare(b[0]));
+  const normalize = entries => entries.map(({ relativePath, type, mode, sha256: digest = null, linkTarget = null }) => [relativePath, type, normalizeBackupMode(mode), digest, linkTarget]).sort((a, b) => a[0].localeCompare(b[0]));
   if (JSON.stringify(normalize(actualEntries)) !== JSON.stringify(normalize(marker.entries))) throw new Error('backup data tree does not exactly match manifest entries');
   return marker;
 }
