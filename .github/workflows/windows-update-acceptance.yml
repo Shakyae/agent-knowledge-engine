@@ -22,6 +22,9 @@ jobs:
       - name: Test Windows npm Path regression
         shell: pwsh
         run: node --import ./tests/helpers/test-env.mjs --test --test-name-pattern="Windows npm resolution accepts" tests/unit/update.test.mjs
+      - name: Test Windows backup mode regressions
+        shell: pwsh
+        run: node --import ./tests/helpers/test-env.mjs --test --test-name-pattern="backup mode comparison|backup validation rejects read-only mode drift" tests/unit/install-backup.test.mjs
       - name: Run native Windows W1-W4 integration acceptance
         shell: pwsh
         run: |
