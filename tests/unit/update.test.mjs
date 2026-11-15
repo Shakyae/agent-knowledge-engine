@@ -10,6 +10,18 @@ import { assertOutsideGitWorkTree, cleanTestEnv, tempRoot } from '../helpers/tes
 
 const sha = 'a'.repeat(40);
 async function makeWorkDir(prefix) { return tempRoot(prefix); }
+test('Windows npm resolution accepts copied Path and preserves package validation', async t => {
+  const { resolveWindowsCli } = await import('../../src/lib/update.mjs');
+  const root = await makeWorkDir('ake-win-npm-path-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, 'node_modules', 'npm', 'bin'); await mkdir(bin, { recursive: true });
+  await writeFile(path.join(root, 'npm.cmd'), '@echo off');
+  await writeFile(path.join(root, 'node_modules', 'npm', 'package.json'), JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
+  const cli = path.join(bin, 'npm-cli.js'); await writeFile(cli, '// fixture');
+  const env = { Path: root, PathExt: '.CMD' };
+  assert.deepEqual(await resolveWindowsCli('npm', { env }), { command: process.execPath, prefix: [await realpath(cli)] });
+  assert.equal(await resolveWindowsCli('npm', { env: { Path: path.join(root, 'missing'), PathExt: '.CMD' } }), null);
+});
+
 test('update arguments are allowlisted and duplicates rejected', () => {
   assert.deepEqual(parseUpdateArgs(['--dry-run', '--json']), { dryRun: true, json: true, acceptCustomized: false });
   assert.throws(() => parseUpdateArgs(['--force']), { code: 'USAGE' });

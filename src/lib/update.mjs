@@ -201,10 +201,11 @@ async function snapshotGitTree(bare, ref, gitRunner) {
   return [...dirs].map(relativePath => ({ relativePath, type: 'directory', mode: 0o755, sha256: null, linkTarget: null })).concat(files).sort((a,b)=>a.relativePath.localeCompare(b.relativePath));
 }
 
-async function resolveWindowsCli(command, { env = process.env } = {}) {
-  const extensions = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+export async function resolveWindowsCli(command, { env = process.env } = {}) {
+  const envValue = name => env[Object.keys(env).find(key => key.toLowerCase() === name.toLowerCase())];
+  const extensions = (envValue('PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   let match = null;
-  for (const directory of (env.PATH ?? '').split(';').filter(Boolean)) {
+  for (const directory of (envValue('PATH') ?? '').split(';').filter(Boolean)) {
     const names = extensions.map(extension => `${command}${extension}`);
     for (const name of names) {
       const requested = path.resolve(directory, name);
