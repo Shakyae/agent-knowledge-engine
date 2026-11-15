@@ -10,7 +10,7 @@ import { assertOutsideGitWorkTree, cleanTestEnv, tempRoot } from '../helpers/tes
 
 const sha = 'a'.repeat(40);
 async function makeWorkDir(prefix) { return tempRoot(prefix); }
-test('Windows npm resolution accepts copied Path and preserves package validation', async t => {
+test('Windows npm resolution accepts copied Path and rejects missing candidates', async t => {
   const { resolveWindowsCli } = await import('../../src/lib/update.mjs');
   const root = await makeWorkDir('ake-win-npm-path-'); t.after(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, 'node_modules', 'npm', 'bin'); await mkdir(bin, { recursive: true });

@@ -362,7 +362,7 @@ test('Windows native W1-W4 pinned-commit Skills CLI update acceptance', { skip: 
   const crossPlatformSmoke = process.env.AKE_ALLOW_CROSS_PLATFORM_UPDATE_ACCEPTANCE === '1';
   assert.ok(process.platform === 'win32' || crossPlatformSmoke, `native acceptance requires Windows (got ${process.platform}); explicitly set AKE_ALLOW_CROSS_PLATFORM_UPDATE_ACCEPTANCE=1 only for a non-native smoke run`);
   const oldSha = 'e6a90216d5c2f6b406fde9597e77eea5d1d7e326';
-  const newSha = '778d732e6ed82cc0df0c8fbfb47e4b3b92b93f8e';
+  const newSha = '578ef7d7b4104d52764f029bf924f0664ed58bd0';
   const official = 'https://github.com/Shakyae/agent-knowledge-engine.git';
   const root = await makeWorkDir('ake-win-update-acceptance-'); t.after(() => rm(root, { recursive: true, force: true }));
   const home = await mkdir(path.join(root, 'home'), { recursive: true }).then(() => realpath(path.join(root, 'home')));
