@@ -27,7 +27,7 @@ AKE gives that knowledge:
 
 ### Install the Skill and initialize projects
 
-AKE itself requires Node.js >= 20; the current [Vercel Skills CLI](https://github.com/vercel-labs/skills) requires Node.js >= 22.20. Install the Skill from the official GitHub repository at a pinned full commit SHA (review and back up existing installations first):
+AKE itself requires Node.js >= 20. The current [Vercel Skills CLI](https://github.com/vercel-labs/skills) requires Node.js >= 22.20; with Skills CLI 1.8.1, an observed Node.js 20 run was incompatible with `fs/promises.glob`. Use Node.js 24 for the Windows native update-acceptance workflow and when running that CLI; this is an operational recommendation, not a change to AKE's Node.js >= 20 minimum. A future improvement could check the runtime version before installation and show a friendly compatibility error; this check and error message are not implemented. Install the Skill from the official GitHub repository at a pinned full commit SHA (review and back up existing installations first):
 
 ```bash
 npx skills add Shakyae/agent-knowledge-engine@<full-commit-sha> --skill ake -g
