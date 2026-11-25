@@ -1,4 +1,4 @@
-# Agent Knowledge Engine (AKE) v0.2.0
+# Agent Knowledge Engine (AKE) v0.2.1
 
 A portable, low-intrusion engineering-knowledge layer for coding agents. Agents retrieve existing project knowledge when relevant, capture reusable results in one of four knowledge kinds, and publish through a bound review/authorization gate. The AKE Skill workflow requires an eligible independent reviewer and explicit user authorization before publication; author self-review is recorded honestly but does not substitute for that review. The CLI retains its automatic authorization mode for compatibility, but the Skill does not use it as a default.
 
@@ -23,7 +23,7 @@ AKE gives that knowledge:
 - Node.js >= 22.20.0 for AKE itself (no third-party runtime dependencies); AKE leaves the target project's own Node version declaration unchanged.
 - Git (initialization refuses to run outside a valid Git work tree).
 
-## Use AKE in a project (v0.2.0)
+## Use AKE in a project (v0.2.1)
 
 ### Install the Skill and initialize projects
 
@@ -165,4 +165,4 @@ Developing AKE: `npm test`, `npm run check` (tests plus validation of this repos
 
 ## Status
 
-v0.2.0 extends the v0.1 contract baseline. The implementation and evidence levels are recorded in [docs/test-report.md](docs/test-report.md). Next-phase suggestions remain listed in [docs/architecture.md](docs/architecture.md) §1 non-goals and in the proposed note above; they are not implemented.
+v0.2.1 extends the v0.1 contract baseline. The implementation and evidence levels are recorded in [docs/test-report.md](docs/test-report.md). Next-phase suggestions remain listed in [docs/architecture.md](docs/architecture.md) §1 non-goals and in the proposed note above; they are not implemented.

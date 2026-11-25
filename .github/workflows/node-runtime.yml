@@ -29,6 +29,19 @@ jobs:
         env:
           AKE_EXPECT_RUNTIME_SUPPORTED: ${{ matrix.supported }}
         run: node --import ./tests/helpers/test-env.mjs --test tests/integration/runtime-gate.test.mjs
-      - name: Run full suite at the minimum supported runtime
-        if: matrix.node == '22.20.0'
+  full-check:
+    name: Full check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+      - name: Run full check
         run: npm run check

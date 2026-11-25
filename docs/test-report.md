@@ -300,3 +300,9 @@ The current AKE host runtime contract is Node.js >=22.20.0. This supersedes the 
 - `node scripts/sync-skill-bundle.mjs` generated 21 files; `node scripts/sync-skill-bundle.mjs --check` passed with package and bundle metadata both at 0.2.0 and `engines.node >=22.20.0`.
 - The added CI matrix uses real Node.js 20.20.2 and 22.19.0 to assert rejection, and 22.20.0 to assert acceptance and run the full check. Those CI jobs and the planned Linux-container runs on Node.js 20.20.2/22.20.0 were not executed by this agent; real lower-bound and exact-minimum process behavior remains pending Lead verification. No version injection was used to simulate a low-runtime entrypoint.
 - No full `npm run check` was run by this agent after the amendment; the focused test results above are not a substitute for the Lead's full check or runtime-container verification.
+
+## v0.2.1 candidate verification (2026-11-26)
+
+- The test command now uses Node's default test-file discovery (`node --import ./tests/helpers/test-env.mjs --test`) rather than enumerating `.test.mjs` globs. This avoids the Node.js 22.20.0 directory-argument import failure while keeping discovery extensible to Node's supported test filename patterns. A direct default-discovery run found 227 entries: the original 226 test cases plus the preloaded helper file `tests/helpers/test-env.mjs`; none of the original cases were dropped.
+- With the package and generated Skill bundle at 0.2.1, `npm run check` passed on official Node.js v22.20.0 and the available macOS Node.js v26.13.0: 227 total, 223 pass, 0 fail, 4 opt-in skips; bundle check reports 21 synchronized files; project validation reports 0 errors / 0 warnings.
+- CI retains the existing runtime-floor matrix and adds a full-check OS matrix on Node.js 22.20.0 for Ubuntu and Windows. The Windows job is configuration only until the workflow runs; this agent did not run Windows natively or push a candidate commit to trigger CI.

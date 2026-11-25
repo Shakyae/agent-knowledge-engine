@@ -1,6 +1,6 @@
 {
   "name": "agent-knowledge-engine",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Project-level engineering knowledge ops for coding agents: retrieve, capture, review and publish with Markdown, Git and a dependency-free Node CLI.",
   "license": "MIT",
@@ -13,7 +13,7 @@
     "ake": "./scripts/ake.mjs"
   },
   "scripts": {
-    "test": "node --import ./tests/helpers/test-env.mjs --test tests/unit tests/integration",
+    "test": "node --import ./tests/helpers/test-env.mjs --test",
     "check": "npm test && node scripts/sync-skill-bundle.mjs --check && node scripts/ake.mjs validate --project .",
     "sync:skill-bundle": "node scripts/sync-skill-bundle.mjs",
     "ake": "node scripts/ake.mjs",
