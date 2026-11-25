@@ -91,7 +91,7 @@ bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 
 - 当任务首次进入 AKE 触发阶段（相关工程知识检索或任务后沉淀）时，在首个 AKE CLI 操作前给用户一条简短通知；同一阶段连续进行的多次搜索/候选命令合并在这条通知中，不逐条重复通知。
 - Agent Teams 由 Lead/任务 owner 统一发用户通知；成员只将检索/候选结果汇报给 Lead，不各自重复通知用户。
 - 在触发的检索阶段，先说明「我会检索 AKE 项目知识并按相关性使用」，再按模块/技术、症状、操作构造具体关键词执行 `node .ake/tools/scripts/ake.mjs search <terms>`。只在触发相关任务时检索，不要求无关任务做空搜索。
-- 搜索默认覆盖四类知识根：Agent Notes、Defensive Patterns、Postmortems、Cookbooks；结果须展示/说明类别标签。需要时使用 `--include-candidates`，并可用 `--type`/`--limit` 缩小结果。
+- 搜索默认覆盖四类知识根：Agent Notes、Defensive Patterns、Postmortems、Cookbooks；结果须展示/说明类别标签。需要时使用 `--include-candidates`，并可用精确的 `--type`/`--status` 和 `--limit` 缩小结果；status 依文档类型各自权威来源读取，缺失值为 `unknown`，过滤后仍须如实报告筛选范围。默认不设输出预算；确需 `--budget-bytes N` 时，限额只约束 UTF-8 编码的命中 payload，不是完整 stdout/JSON 硬上限。若预算导致结果省略，必须检查 `coverage`、`truncated` 和 `coverageReasons`，向用户提示结果可能不完整，不得当作无命中。
 - 命中后只读查看相关文档；判断其 scope、status、verified、证据和当前代码是否仍适用，不把命中视为自动指令。最终报告指出检索词、命中文档/类别及适用性；没有命中只表示“未找到”，不表示知识不存在。
 
 ## 任务后：判断是否值得沉淀

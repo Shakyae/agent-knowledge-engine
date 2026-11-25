@@ -32,6 +32,7 @@ test('help shows the supported status JSON form', () => {
   const result = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^ake status \[--json\]$/m);
+  assert.match(result.stdout, /^ake search <terms> .*--status STATUS.*--budget-bytes N/m);
 });
 
 test('/ake and /ake help both display help instead of starting knowledge capture', async () => {

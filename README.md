@@ -128,7 +128,7 @@ One fact has one authoritative home; related knowledge is linked with relative M
 | Command | Purpose |
 |---|---|
 | `ake init [--dir] [--dry-run] [--merge-agents]` | initialize the current working directory by default, or the optional `--dir` target; plan knowledge layout and append AKE rules to unmarked `AGENTS.md` by default |
-| `ake search <terms…> [--type] [--limit] [--include-candidates] [--json]` | keyword retrieval with coverage reporting |
+| `ake search <terms…> [--type] [--status] [--limit] [--budget-bytes N] [--include-candidates] [--json]` | keyword retrieval with coverage reporting |
 | `ake validate [--project] [--path] [--json]` | format, link, id and lifecycle checks |
 | `ake candidate new/submit/revise/list/show/check <id>` | candidate lifecycle and drift/similarity report |
 | `ake review <id> --reviewer --verdict [--notes]` or `--self-review` | independent review or explicitly identified author self-review, bound to current content |
@@ -143,7 +143,7 @@ Exit codes: `0` success, `1` validation/gate refusal (with the concrete reason),
 ## Limitations
 
 - **Not a security boundary.** In a shared writable workspace, ordinary file and shell tools can still edit formal knowledge directly, and `--by`/`--reviewer` strings are declarations, not verified identities. The publish gate checks only operations that go through the CLI; it does not prevent bypass, and there is no filesystem lock or multi-file transaction. Never report the workflow as mandatory enforcement.
-- **Retrieval is lexical.** `ake search` matches tokens deterministically and reports its scope and coverage; it does not perform semantic retrieval, cannot guarantee recall, and does not decide whether knowledge still applies. Scores are ranking hints, not relevance probabilities.
+- **Retrieval is lexical.** `ake search` matches tokens deterministically and reports its scope and coverage; it does not perform semantic retrieval, cannot guarantee recall, and does not decide whether knowledge still applies. Scores are ranking hints, not relevance probabilities. `--status` is an exact optional filter using each kind's status authority; missing status is `unknown`. `--budget-bytes N` defaults to unlimited and bounds only serialized hit payload bytes (UTF-8, excluding array brackets, top-level metadata/coverage diagnostics, and CLI framing). A budget-truncated search keeps valid structure and reports incomplete coverage; this is not a stdout hard limit.
 - **The CLI retains a local automatic mode, but the Skill workflow requires user authorization.** AKE's Skill does not treat reviewer approval as publication authorization and does not invoke automatic authorization by default. It waits for explicit user authorization before the declared human mode and publication. The CLI's `--confirm` writes the selected authorization mode; `--by` remains an unverified declaration. Existing automatic mode remains available for compatibility but is not a security control or the documented Skill workflow.
 - **Verification scope.** Unit tests and isolation-project integration tests run in CI-like conditions. Real DSH Single-Session and Agent Teams runs are recorded as individual observations, not statistics; retrieval recall, adherence and identity verification remain unverified. See [docs/test-report.md](docs/test-report.md).
 - **Not implemented in v0.1**: DSH runtime plugin, MCP server, vector index, background service, web UI, central approval service, bilingual note triplets, the official `archived/` tree.
@@ -161,7 +161,7 @@ docs/                architecture, test report, design review, reviews
 research/knowledge-ops/   research reports and official format references (evidence)
 ```
 
-Developing AKE: `npm test`, `npm run check` (tests plus validation of this repository's own knowledge).
+Developing AKE: `npm test`, `npm run check` (tests plus validation of this repository's own knowledge). Run `node scripts/benchmark-search.mjs` to generate a deterministic synthetic 100/500/1000-document retrieval benchmark (21 hot calls and 21 fresh-process runs per query); cold means a new Node process, not cleared OS caches. It reports median/p95 search latency, readFile calls (including config), compact serialized result-object bytes, asserted gold retrieval/filter expectations, and post-search RSS (not peak RSS). The deliberately repeated synthetic topics test lexical handling and do not represent real knowledge distributions or semantic recall. To compare a saved report, write the earlier JSON under ignored `.ake-tmp/` and run `node scripts/benchmark-search.mjs --compare .ake-tmp/search-before.json`; comparison includes latency, reads, result bytes, and RSS when corpus/query/options match. It uses only generated synthetic Markdown and does not measure real knowledge corpora or semantic retrieval.
 
 ## Status
 

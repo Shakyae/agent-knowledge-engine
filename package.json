@@ -16,7 +16,8 @@
     "test": "node --import ./tests/helpers/test-env.mjs --test tests/unit tests/integration",
     "check": "npm test && node scripts/sync-skill-bundle.mjs --check && node scripts/ake.mjs validate --project .",
     "sync:skill-bundle": "node scripts/sync-skill-bundle.mjs",
-    "ake": "node scripts/ake.mjs"
+    "ake": "node scripts/ake.mjs",
+    "bench:search": "node scripts/benchmark-search.mjs"
   },
   "files": [
     "scripts",
