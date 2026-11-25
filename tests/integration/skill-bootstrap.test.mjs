@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { cleanTestEnv } from '../helpers/test-env.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const skillSource = path.join(repoRoot, 'skills', 'ake');
@@ -402,6 +403,14 @@ function runProjectCli(target, args, env = process.env) {
   return spawnSync(process.execPath, [path.join(target, '.ake/tools/scripts/ake.mjs'), ...args], { cwd: target, env, encoding: 'utf8' });
 }
 
+async function installLegacyCli(target) {
+  const source = path.join(repoRoot, 'tests/fixtures/legacy-ake-cli-720b2e8');
+  const destination = path.join(target, '.ake/tools');
+  await mkdir(path.join(destination, 'scripts'), { recursive: true });
+  await cp(path.join(source, 'scripts/ake.mjs'), path.join(destination, 'scripts/ake.mjs'));
+  await cp(path.join(source, 'src/lib'), path.join(destination, 'src/lib'), { recursive: true });
+}
+
 test('Skill preflight checks status once in the canonical target cwd and inherited environment', async (t) => {
   const { root, preflight } = await fixture(t);
   const log = path.join(root, 'invocation.json');
@@ -450,6 +459,41 @@ test('Skill preflight accepts legacy help differences; the actual unsupported ta
   const actualTask = runProjectCli(target, ['search', 'query', '--json']);
   assert.equal(actualTask.status, 2);
   assert.match(actualTask.stderr, /unknown command: search/);
+});
+
+test('real master CLI passes preflight but silently ignores unsupported status and budget flags', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const target = path.join(root, 'legacy CLI project');
+  await mkdir(target, { recursive: true });
+  gitInit(target);
+  await mkdir(path.join(target, '.ake'), { recursive: true });
+  await writeFile(path.join(target, '.ake/config.json'), '{}\n');
+  await installLegacyCli(target);
+  await mkdir(path.join(target, 'docs/cookbook'), { recursive: true });
+  await writeFile(path.join(target, 'docs/cookbook/active.md'), '---\nake:\n  type: cookbook\n  id: CB-legacy-active\n  status: active\n---\n# legacy option probe\n\nlegacy option probe active\n');
+  await writeFile(path.join(target, 'docs/cookbook/draft.md'), '---\nake:\n  type: cookbook\n  id: CB-legacy-draft\n  status: draft\n---\n# legacy option probe\n\nlegacy option probe draft\n');
+
+  const env = cleanTestEnv();
+  const preflightResult = runPreflight(preflight, target, env);
+  assert.equal(preflightResult.status, 0, preflightResult.stderr);
+  assert.match(preflightResult.stdout, /PROJECT_OK/);
+
+  const help = runProjectCli(target, ['--help'], env);
+  assert.equal(help.status, 0, help.stderr);
+  const searchUsage = help.stdout.split('\n').find(line => line.startsWith('ake search '));
+  assert.ok(searchUsage, help.stdout);
+  const requiredSignatures = ['--status STATUS', '--budget-bytes N'];
+  const unsupportedSignatures = requiredSignatures.filter(signature => !searchUsage.includes(signature));
+  assert.deepEqual(unsupportedSignatures, requiredSignatures, 'the exact read-only help check must detect unsupported options');
+
+  // Negative control: invoke the real master CLI to prove its parser silently ignores those options.
+  const search = runProjectCli(target, ['search', 'legacy option probe', '--type', 'cookbook', '--status', 'active', '--budget-bytes', '0', '--json'], env);
+  assert.equal(search.status, 0, search.stderr);
+  const result = JSON.parse(search.stdout);
+  assert.equal(result.results.length, 2, 'unsupported status and budget options are ignored despite a success exit code');
+  assert.deepEqual(result.results.map(hit => hit.status).sort(), ['active', 'draft']);
+  assert.equal(result.filters, undefined, 'the old JSON result does not echo applied filters');
+  assert.ok(Buffer.byteLength(JSON.stringify(result.results), 'utf8') > 0, 'the old CLI also ignores a zero-byte budget');
 });
 
 test('Skill preflight canonicalizes a real symlink target', async (t) => {

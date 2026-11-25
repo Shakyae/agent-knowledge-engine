@@ -81,7 +81,7 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
 node <本 Skill base directory 的绝对路径>/preflight.mjs --dir <绝对目标路径>
 ```
 
-Helper 只运行既有项目 CLI 的 `status --json`，要求返回绝对 `project` 路径且其 realpath 与目标 realpath 相同；status 成功仅验证项目选择，不证明任何任务命令兼容。相对、缺失、不可解析或不匹配的路径均停止。预检后，Agent 在相同真实 cwd/env 直接执行实际任务所需的命令；只读操作（例如 `search`）执行一次即直接使用原始完整结果，包括用户指定的 options 与 coverage，不重复搜索来验证或重新提取结果。对写操作不运行破坏性探测；需要时参考现有 `--help`，不同版本的 help 文字差异不单独判失败。实际命令若返回不支持/参数不兼容等错误，应如实诊断并尝试有依据的安全调整；仍无法解决时才询问用户。不得声称 status、help 或入口存在即可证明写操作兼容/安全，也不得将其作为授权。
+Helper 只运行既有项目 CLI 的 `status --json`，要求返回绝对 `project` 路径且其 realpath 与目标 realpath 相同；status 成功仅验证项目选择，不证明任何任务命令兼容。相对、缺失、不可解析或不匹配的路径均停止。预检后，Agent 在相同真实 cwd/env 直接执行实际任务所需的命令。若只读操作（例如 `search`）需要任何 CLI options，先在同一真实 cwd/env 只读运行 `node .ake/tools/scripts/ake.mjs --help`，并检查该 CLI 当前 `search` usage 是否精确声明本次每个所需 flag 及值形态（例如 `--status STATUS`、`--budget-bytes N`、`--type TYPE`、`--limit N`、`--json`）。不同版本的 help 文字差异本身不单独判失败；但所需参数缺失、help 失败/不可读/无法解析时，能力即未获证明：不要运行带该选项的 search，不得删掉选项静默降级、猜测替代参数或重搜；明确报告 CLI 未声明/无法确认该选项，不能声称该过滤/预算已生效。Help 是 CLI 的能力声明，不是行为证明或安全保证。支持的只读 search 执行一次，直接使用原始完整结果，包括 query/options、filters、coverage，不重复搜索来验证或重新提取结果；若请求 `--type`/`--status`，还须核对结果 JSON 回显的 filters 与请求完全一致，否则把过滤结果标为未验证，不重跑。`--budget-bytes` 只涉及其明确契约范围，不得称为完整 stdout 硬上限。对写操作不运行破坏性探测；实际命令若返回不支持/参数不兼容等错误，应如实诊断，不得将 status、help 或入口存在宣称为写操作兼容/安全，也不得将其作为授权。
 
 实际操作沿用核验时的真实 cwd/env；仅在 cwd、环境、目标项目配置/CLI 或相关上下文发生变化后重做身份核验，不要求每条写命令前都重复扫描。Preflight 会运行项目已有 CLI，不能保证无副作用或认证 CLI 身份。若 DSH 宿主、系统策略或权限拒绝 helper/子进程，立即停止，不得通过 Node/bash 包装器、MCP 或其他执行路径绕过。Bootstrap 遇到既有配置/CLI只保留现状；若报告项目根不符或部分初始化，先备份并人工审阅迁移/合并方案，禁止自动复制、升级或覆盖项目文件。
 
@@ -110,7 +110,7 @@ bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 
 ## 任务前：用户可见通知与按需检索
 - 当任务首次进入 AKE 触发阶段（相关工程知识检索或任务后沉淀）时，在首个 AKE CLI 操作前给用户一条简短通知；同一阶段连续进行的多次搜索/候选命令合并在这条通知中，不逐条重复通知。
 - Agent Teams 由 Lead/任务 owner 统一发用户通知；成员只将检索/候选结果汇报给 Lead，不各自重复通知用户。
-- 在触发的检索阶段，先说明「我会检索 AKE 项目知识并按相关性使用」，再按模块/技术、症状、操作构造具体关键词。若使用既有项目 CLI 且项目根需要确认，先用本 Skill 的 `preflight.mjs --dir <absolute-target>` 核验一次；随后在同一真实 cwd/env 直接运行一次 `node .ake/tools/scripts/ake.mjs search <terms> [options] --json`。记录实际命令的 query/options，并将原始 JSON 的 query、filters、searchedRoots、coverage、coverageReasons、truncated 和 results 一并作为本阶段结果，不重复搜索或用无 options 的第二次搜索覆盖结果。只在触发相关任务时检索，不要求无关任务做空搜索。
+- 在触发的检索阶段，先说明「我会检索 AKE 项目知识并按相关性使用」，再按模块/技术、症状、操作构造具体关键词。若使用既有项目 CLI 且项目根需要确认，先用本 Skill 的 `preflight.mjs --dir <absolute-target>` 核验一次；随后在同一真实 cwd/env 只读运行一次 `node .ake/tools/scripts/ake.mjs --help`，检查其 `search` usage 精确列出了本次命令所需的每个 option 及值形态（包括 `--json`）。若任一所需 option 缺失、help 无法读取或不能解析，停止这次带 options 的 search，告知用户该 CLI 未声明/无法确认支持；不得删除选项、静默降级或再搜索。Help 仅是能力声明，不证明运行行为或安全。通过声明检查后，在相同 cwd/env 运行一次 `node .ake/tools/scripts/ake.mjs search <terms> [options] --json`。记录实际命令的 query/options，并将原始 JSON 的 query、filters、searchedRoots、coverage、coverageReasons、truncated 和 results 一并作为本阶段结果；若要求 `--type`/`--status`，核对 JSON filters 与请求一致，缺失/不符即报告未验证，不重搜。只在触发相关任务时检索，不要求无关任务做空搜索。
 - 搜索默认覆盖四类知识根：Agent Notes、Defensive Patterns、Postmortems、Cookbooks；结果须展示/说明类别标签。需要时使用 `--include-candidates`，并可用精确的 `--type`、`--status` 和 `--limit` 缩小结果；status 依文档类型各自权威来源读取，缺失值为 `unknown`，过滤后仍须如实报告筛选范围。
 - 默认不设输出预算；确需 `--budget-bytes N` 时，限额只约束 UTF-8 编码的命中 payload，不是完整 stdout/JSON 硬上限。若预算导致结果省略，必须检查 `coverage`、`truncated` 和 `coverageReasons`，向用户提示结果可能不完整，不得当作无命中。
 - 命中后只读查看相关文档；判断其 scope、status、verified、证据和当前代码是否仍适用，不把命中视为自动指令。最终报告指出检索词、命中文档/类别及适用性；没有命中只表示“未找到”，不表示知识不存在。
