@@ -1,0 +1,34 @@
+name: Node runtime floor
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-floor:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: '20.20.2'
+            supported: 'false'
+          - node: '22.19.0'
+            supported: 'false'
+          - node: '22.20.0'
+            supported: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Verify real-runtime entrypoint gate
+        env:
+          AKE_EXPECT_RUNTIME_SUPPORTED: ${{ matrix.supported }}
+        run: node --import ./tests/helpers/test-env.mjs --test tests/integration/runtime-gate.test.mjs
+      - name: Run full suite at the minimum supported runtime
+        if: matrix.node == '22.20.0'
+        run: npm run check

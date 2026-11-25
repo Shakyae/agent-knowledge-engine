@@ -4,6 +4,20 @@ import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+function nodeVersionFailure(value = process.versions.node) {
+  const version = value;
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  const current = match ? match.slice(1, 4).map(Number) : null;
+  let supported = Boolean(current && current.every(Number.isSafeInteger) && !match[4]);
+  if (supported) {
+    const minimum = [22, 20, 0];
+    for (let index = 0; index < minimum.length; index++) {
+      if (current[index] !== minimum[index]) { supported = current[index] > minimum[index]; break; }
+    }
+  }
+  return supported ? null : `Unsupported Node.js version ${version}; AKE requires Node.js >=22.20.0. Upgrade the Node.js runtime used by AKE and rerun. No AKE operation was started.`;
+}
+
 function fail(code, message) {
   console.error(`${code}: ${message}`);
   return 1;
@@ -88,6 +102,8 @@ function inspectGitIndependently(target) {
 }
 
 function main() {
+  const versionError = nodeVersionFailure();
+  if (versionError) return fail('NODE_VERSION', versionError);
   let requested;
   try { requested = parseArgs(process.argv.slice(2)); }
   catch (error) { return fail('USAGE', error.message); }

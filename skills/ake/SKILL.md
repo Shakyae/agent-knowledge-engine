@@ -65,6 +65,8 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
 
 先确定目标项目的绝对路径，并使用 Skill 加载器提供的 **本 Skill base directory** 绝对路径；不得从当前工作目录、目标项目或 AKE 源码 checkout 推导 Skill 路径。若加载环境未提供该绝对路径，先请用户提供/确认已安装 Skill 的位置，不要猜路径。
 
+本发行版中的 AKE CLI 和 Skill helper 要求运行它们的 AKE host 使用 Node.js >=22.20.0；较低版本应在执行任务、访问目标项目、运行子进程或写入前失败并报告当前/最低版本。项目本地 CLI 的门禁模块随离线资源 `resources/ake-source/src/lib/runtime.mjs` 分发，bootstrap 会在 apply 前核对该资源。该要求只针对运行 AKE 的 Node，不改目标应用的 `package.json`/`engines`。Preflight/bootstrap 保留已有项目 `.ake` 配置与 CLI，不会自动升级它们；若 Skill 版本较旧，须经正常批准的安装/更新流程获得此版本门禁。
+
 ## 项目初始化（按需）
 
 先按目标状态选择入口：若 `.ake/config.json` 与 `.ake/tools/scripts/ake.mjs` 都是普通文件，Agent 直接运行本 Skill 的 `preflight.mjs`；否则先运行 `bootstrap.mjs --dry-run` 预览。不要要求用户代跑预检。Bootstrap 清理 `GIT_*` 环境变量，只在 canonical 目标目录工作，不向上迁移、不创建嵌套仓库；`bootstrap --dry-run` 及普通 bootstrap 均不运行 `git init`。已有父级 worktree、linked worktree、unborn branch（没有首次 commit）都是有效 Git worktree，不要求新建 `.git`。只有 bootstrap 或 preflight 明确返回稳定码 `NOT_GIT_WORKTREE` 时，才可走下面的选项流程：bootstrap 用于尚未初始化/部分状态，preflight 只在现有 AKE 项目 CLI 的 status 明确指出没有仓库时触发。Preflight 的 `GIT_UNAVAILABLE`、`BARE_REPOSITORY`、`STATUS_FAILED`、权限错误、损坏/异常 `.git` 及任何未识别结果都不得当作无 Git，也不得询问 init；只报告并停止相关 AKE 操作。

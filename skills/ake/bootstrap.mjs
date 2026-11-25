@@ -4,6 +4,20 @@ import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+function nodeVersionFailure(value = process.versions.node) {
+  const version = value;
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  const current = match ? match.slice(1, 4).map(Number) : null;
+  let supported = Boolean(current && current.every(Number.isSafeInteger) && !match[4]);
+  if (supported) {
+    const minimum = [22, 20, 0];
+    for (let index = 0; index < minimum.length; index++) {
+      if (current[index] !== minimum[index]) { supported = current[index] > minimum[index]; break; }
+    }
+  }
+  return supported ? null : `Unsupported Node.js version ${version}; AKE requires Node.js >=22.20.0. Upgrade the Node.js runtime used by AKE and rerun. No AKE operation was started.`;
+}
+
 const skillDir = path.dirname(fileURLToPath(import.meta.url));
 const bundledRoot = path.join(skillDir, 'resources', 'ake-source');
 const bundledCli = path.join(bundledRoot, 'scripts', 'ake.mjs');
@@ -24,6 +38,7 @@ const requiredResources = [
   'src/lib/publish.mjs',
   'src/lib/report.mjs',
   'src/lib/search.mjs',
+  'src/lib/runtime.mjs',
 ];
 
 function fail(message) {
@@ -115,6 +130,8 @@ function reportChild(result) {
 }
 
 async function main() {
+  const versionError = nodeVersionFailure();
+  if (versionError) return fail(`NODE_VERSION: ${versionError}`);
   let options;
   try {
     options = parseArgs(process.argv.slice(2));

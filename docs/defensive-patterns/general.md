@@ -106,7 +106,7 @@ Modules installed into another project must be `.mjs`. A `.js` file inherits the
 
 **Reviewer check:** the integration suite initializes a target with no `package.json` (and one with `"type": "commonjs"`) and runs `node .ake/tools/scripts/ake.mjs validate` as a subprocess; it must exit 0/1 by validation, not by a module-resolution error.
 
-**Boundary:** requires Node >= 20; nothing is claimed about older runtimes or other package formats.
+**Boundary:** the newly installed AKE CLI requires Node >=22.20.0 on the host that runs it; this does not change the target application's own Node declaration. Bootstrap/preflight preserve existing target CLI/config rather than upgrading them. Nothing is claimed about older AKE CLI copies or other package formats.
 
 ```text
 .ake/tools/scripts/ake.mjs          correct: ESM everywhere

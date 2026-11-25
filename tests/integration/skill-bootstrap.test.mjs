@@ -270,7 +270,7 @@ test('existing project config and CLI are preserved without upgrade', async (t) 
 
   const result = run(bootstrap, target, root);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /config version 0\.0\.9 differs from bundled metadata version 0\.1\.0/);
+  assert.match(result.stdout, /config version 0\.0\.9 differs from bundled metadata version 0\.2\.0/);
   assert.match(result.stdout, /project CLI was not executed/);
   assert.deepEqual(await readFile(path.join(target, '.ake/config.json')), config);
   assert.deepEqual(await readFile(path.join(target, '.ake/tools/scripts/ake.mjs')), cli);

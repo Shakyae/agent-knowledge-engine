@@ -1,6 +1,6 @@
 {
   "name": "agent-knowledge-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Shakyae/agent-knowledge-engine.git"
@@ -8,6 +8,6 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.20.0"
   }
 }

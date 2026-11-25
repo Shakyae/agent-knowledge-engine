@@ -6,7 +6,7 @@ This repository develops **AKE itself**. For the file a *target* project receive
 
 - `docs/architecture.md` is the authoritative current v0.1 interface (CLI surface, file formats, gates, verification levels), including explicitly authorized amendments. Propose other changes to the Lead before deviating; do not silently widen scope.
 - v0.1 is Markdown + Git + a dependency-free Node CLI. No plugin, MCP server, vector store, background service, web UI or third-party dependency.
-- Node >= 20, ESM only, `node:test`, cross-platform paths, LF newlines.
+- Node >= 22.20.0 for the AKE host, ESM only, `node:test`, cross-platform paths, LF newlines. This does not change a target project's own Node declaration.
 
 ## Honesty of claims
 

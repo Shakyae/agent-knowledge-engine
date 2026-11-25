@@ -1,32 +1,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { cleanTestEnv, tempRoot } from '../helpers/test-env.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const cli = path.join(repo, 'scripts/ake.mjs');
 const official = 'https://github.com/Shakyae/agent-knowledge-engine.git';
 async function temp(t) { const dir = await tempRoot('ake-status-install-'); t.after(() => rm(dir, { recursive: true, force: true })); return dir; }
-async function fixture(t, { lock, withLink = false } = {}) {
+async function fixture(t, { lock, withLink = false, runtimeMarker = false } = {}) {
   const home = await temp(t), skill = path.join(home, '.agents', 'skills', 'ake'), bundle = path.join(skill, 'resources', 'ake-source');
   await mkdir(path.join(bundle, 'scripts'), { recursive: true });
   await mkdir(path.join(skill, 'resources'), { recursive: true });
-  await writeFile(path.join(skill, 'SKILL.md'), '# Skill\n\nRun `preflight.mjs --dir <target>` before using the project CLI. On native user selection, run `init-git.mjs --dir <canonical-target>`.');
+  const skillText = '# Skill\n\nRun `preflight.mjs --dir <target>` before using the project CLI. On native user selection, run `init-git.mjs --dir <canonical-target>`.\n'
+    + (runtimeMarker ? 'The project CLI uses `resources/ake-source/src/lib/runtime.mjs`.\n' : '');
+  await writeFile(path.join(skill, 'SKILL.md'), skillText);
   await writeFile(path.join(skill, 'bootstrap.mjs'), '');
   await writeFile(path.join(skill, 'preflight.mjs'), '');
   await writeFile(path.join(skill, 'init-git.mjs'), '');
   await writeFile(path.join(bundle, 'package.json'), JSON.stringify({ name: 'agent-knowledge-engine', version: '0.1.0', repository: { url: official } }));
   await writeFile(path.join(bundle, 'scripts', 'ake.mjs'), '');
+  if (runtimeMarker) {
+    await mkdir(path.join(bundle, 'src', 'lib'), { recursive: true });
+    await writeFile(path.join(bundle, 'src', 'lib', 'runtime.mjs'), '');
+  }
   await mkdir(path.join(home, '.agents'), { recursive: true });
   if (lock !== undefined) await writeFile(path.join(home, '.agents', '.skill-lock.json'), JSON.stringify({ skills: { ake: lock } }));
   if (withLink) { await mkdir(path.join(home, '.claude', 'skills'), { recursive: true }); await symlink(skill, path.join(home, '.claude', 'skills', 'ake')); }
   return { home, skill, entry: path.join(bundle, 'scripts', 'ake.mjs') };
 }
-function runStatus(cwd) {
-  return spawnSync(process.execPath, [cli, 'status', '--json'], { cwd, encoding: 'utf8', env: cleanTestEnv({ HOME: cwd, DSH_AGENTS_HOME: path.join(cwd, '.agents') }) });
+function runStatus(cwd, entry = cli) {
+  return spawnSync(process.execPath, [entry, 'status', '--json'], { cwd, encoding: 'utf8', env: cleanTestEnv({ HOME: cwd, DSH_AGENTS_HOME: path.join(cwd, '.agents') }) });
 }
 
 test('status JSON and text first line match pre-change HEAD on a populated project', async t => {
@@ -98,6 +104,35 @@ test('installation resource completeness uses literal helper markers and preserv
   await writeFile(path.join(f.skill, 'SKILL.md'), '# Legacy Skill without preflight or init-git markers');
   await rm(path.join(f.skill, 'preflight.mjs'));
   assert.equal((await readInstallation(options)).resourcesComplete, true, 'a legacy Skill without either helper marker remains complete');
+});
+
+test('external project CLI reports an incomplete independent Skill while its broken CLI cannot start', async t => {
+  async function externalInspector(f) {
+    const script = path.join(f.home, 'external-status.mjs');
+    const installationModule = pathToFileURL(path.join(repo, 'src', 'lib', 'installation.mjs')).href;
+    await writeFile(script, `import { readInstallation } from '${installationModule}';\nconsole.log(JSON.stringify(await readInstallation({ entry: process.env.AKE_SKILL_ENTRY, home: process.env.HOME, env: process.env })));\n`);
+    return spawnSync(process.execPath, [script], { cwd: f.home, encoding: 'utf8', env: cleanTestEnv({ HOME: f.home, DSH_AGENTS_HOME: path.join(f.home, '.agents'), AKE_SKILL_ENTRY: f.entry }) });
+  }
+
+  const current = await fixture(t, { runtimeMarker: true }), bundle = path.join(current.skill, 'resources', 'ake-source');
+  assert.equal(spawnSync('git', ['init', '--quiet', current.home], { encoding: 'utf8', env: cleanTestEnv() }).status, 0);
+  await cp(path.join(repo, 'scripts', 'ake.mjs'), current.entry);
+  await cp(path.join(repo, 'src', 'lib'), path.join(bundle, 'src', 'lib'), { recursive: true });
+  const before = runStatus(current.home, current.entry);
+  assert.equal(before.status, 0, before.stderr);
+  assert.equal(JSON.parse(before.stdout).installation.resourcesComplete, true);
+  await rm(path.join(bundle, 'src', 'lib', 'runtime.mjs'));
+  const selfStatus = runStatus(current.home, current.entry);
+  assert.notEqual(selfStatus.status, 0);
+  assert.match(selfStatus.stderr, /ERR_MODULE_NOT_FOUND/);
+  const externalStatus = await externalInspector(current);
+  assert.equal(externalStatus.status, 0, externalStatus.stderr);
+  assert.equal(JSON.parse(externalStatus.stdout).resourcesComplete, false, 'external status probe can report the missing declared runtime');
+
+  const legacy = await fixture(t);
+  const legacyStatus = await externalInspector(legacy);
+  assert.equal(legacyStatus.status, 0, legacyStatus.stderr);
+  assert.equal(JSON.parse(legacyStatus.stdout).resourcesComplete, true, 'legacy Skill without runtime marker remains compatible');
 });
 
 test('valid official ref and canonical plus matching Claude symlink are identified', async t => {

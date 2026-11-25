@@ -2,6 +2,10 @@
 import path from 'node:path';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { nodeVersionFailure, formatNodeVersionError } from '../src/lib/runtime.mjs';
+
+const versionError = nodeVersionFailure();
+if (versionError) { console.error(formatNodeVersionError(versionError)); process.exit(1); }
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outputRoot = path.join(repoRoot, 'skills', 'ake', 'resources', 'ake-source');
@@ -12,7 +16,7 @@ const packageMetadata = {
   repository: JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')).repository,
   private: true,
   type: 'module',
-  engines: { node: '>=20' },
+  engines: { node: '>=22.20.0' },
 };
 
 async function filesBelow(directory, prefix = '') {

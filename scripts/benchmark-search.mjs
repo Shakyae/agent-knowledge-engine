@@ -9,6 +9,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { nodeVersionFailure, formatNodeVersionError } from '../src/lib/runtime.mjs';
+
+const versionError = nodeVersionFailure();
+if (versionError) { console.error(formatNodeVersionError(versionError)); process.exit(1); }
 
 const cases = [
   { query: 'connection timeout retry', goldPath: '.agents/notes/implemented/architecture/0000.md' },

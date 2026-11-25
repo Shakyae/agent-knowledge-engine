@@ -25,6 +25,7 @@ async function resourcesComplete(root) {
     const required = ['bootstrap.mjs', 'resources/ake-source/package.json', 'resources/ake-source/scripts/ake.mjs'];
     // Literal marker heuristic only; it does not parse or authenticate the installed Skill.
     for (const helper of ['preflight.mjs', 'init-git.mjs']) if (skill.includes(helper)) required.push(helper);
+    if (skill.includes('resources/ake-source/src/lib/runtime.mjs')) required.push('resources/ake-source/src/lib/runtime.mjs');
     for (const relative of required) await readFile(path.join(root, relative));
     return true;
   } catch { return false; }

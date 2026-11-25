@@ -1,13 +1,13 @@
 {
   "name": "agent-knowledge-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Project-level engineering knowledge ops for coding agents: retrieve, capture, review and publish with Markdown, Git and a dependency-free Node CLI.",
   "license": "MIT",
   "repository": { "type": "git", "url": "https://github.com/Shakyae/agent-knowledge-engine.git" },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.20.0"
   },
   "bin": {
     "ake": "./scripts/ake.mjs"
