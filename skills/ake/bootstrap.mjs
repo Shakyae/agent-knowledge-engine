@@ -83,6 +83,35 @@ function findGitMarker(target) {
   }
 }
 
+function directoryIdentity(target) {
+  const info = statSync(target, { bigint: true });
+  if (!info.isDirectory() || info.dev === 0n || info.ino === 0n || info.birthtimeNs === 0n) return null;
+  return `${info.dev}:${info.ino}:${info.birthtimeNs}`;
+}
+
+// Identity-based ancestry handles path aliases without case folding; the separate stats are not atomic against concurrent mutation.
+export function isDirectoryAncestor(root, target) {
+  let rootIdentity;
+  try { rootIdentity = directoryIdentity(root); }
+  catch { return false; }
+  if (!rootIdentity) return false;
+  let current = target;
+  while (true) {
+    let currentIdentity;
+    try { currentIdentity = directoryIdentity(current); }
+    catch { return false; }
+    if (!currentIdentity) return false;
+    if (currentIdentity === rootIdentity) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
+function canonicalRealPath(target) {
+  return realpathSync.native ? realpathSync.native(target) : realpathSync(target);
+}
+
 function runCli(args) {
   return spawnSync(process.execPath, [bundledCli, ...args], { encoding: 'utf8' });
 }
@@ -141,7 +170,7 @@ async function main() {
 
   let target;
   try {
-    target = realpathSync(options.target);
+    target = canonicalRealPath(options.target);
     if (!statSync(target).isDirectory()) return fail(`target is not a directory: ${options.target}`);
   } catch (error) {
     return fail(`target directory is unavailable: ${options.target} (${error.message})`);
@@ -171,10 +200,9 @@ async function main() {
     return fail(`Git could not resolve the work-tree root for ${target}; no files were written.`);
   }
   let gitRoot;
-  try { gitRoot = realpathSync(rootResult.stdout.replace(/\r?\n$/, '')); }
+  try { gitRoot = canonicalRealPath(rootResult.stdout.replace(/\r?\n$/, '')); }
   catch { return fail(`cannot resolve Git work-tree root for ${target}; no files were written.`); }
-  const relativeToRoot = path.relative(gitRoot, target);
-  if (relativeToRoot === '..' || relativeToRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToRoot)) {
+  if (!isDirectoryAncestor(gitRoot, target)) {
     return fail(`Git reported an inconsistent work-tree root for ${target}; no files were written.`);
   }
 
@@ -223,4 +251,6 @@ async function main() {
   return applied.error ? fail(`bundled AKE init failed: ${applied.error.message}`) : (applied.status ?? 1);
 }
 
-process.exitCode = await main();
+let invokedEntry = null;
+try { if (process.argv[1]) invokedEntry = realpathSync(process.argv[1]); } catch {}
+if (invokedEntry && invokedEntry === realpathSync(fileURLToPath(import.meta.url))) process.exitCode = await main();

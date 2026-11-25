@@ -15,14 +15,14 @@ function matchesWord(word, term) { return hasCjk(word) || hasCjk(term) ? word.in
 function termMatch(text, term) { return words(text).some(word => matchesWord(word, term)); }
 function scoreField(text, term) { return Math.min(3, words(text).filter(word => matchesWord(word, term)).length); }
 
-async function collect(dir, files, fail) {
+async function collect(dir, files, fail, readDirectory = readdir) {
   let entries;
-  try { entries = await readdir(dir, { withFileTypes: true }); }
+  try { entries = await readDirectory(dir, { withFileTypes: true }); }
   catch (error) { fail(`${dir}: cannot read directory: ${error.message}`); return; }
   for (const entry of entries) {
     if (entry.name.startsWith('.')) continue;
     const file = path.join(dir, entry.name);
-    if (entry.isDirectory()) await collect(file, files, fail);
+    if (entry.isDirectory()) await collect(file, files, fail, readDirectory);
     else if (entry.isFile() && entry.name.endsWith('.md') && entry.name !== 'README.md') files.push(file);
     else if (entry.isSymbolicLink()) fail(`${file}: skipped symbolic link`);
   }
@@ -39,6 +39,7 @@ function payloadBytes(results) {
 
 export async function search(projectRoot, query, opts = {}) {
   const root = path.resolve(projectRoot), config = await loadConfig(root);
+  // Narrow I/O seam for deterministic EACCES coverage tests; CLI callers use the real filesystem.
   const roots = Object.entries(config.knowledgeRoots), terms = words(query), results = [], coverageReasons = [], searchedRoots = roots.map(([, relative]) => relative);
   let incomplete = false;
   const fail = reason => { incomplete = true; coverageReasons.push(reason); };
@@ -50,7 +51,7 @@ export async function search(projectRoot, query, opts = {}) {
       const [realRoot, realBase] = await Promise.all([realpath(root), realpath(base)]);
       const realRel = path.relative(realRoot, realBase);
       if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) { fail(`${base}: root resolves outside project`); return; }
-      await collect(base, files, fail);
+      await collect(base, files, fail, opts.readDirectory ?? readdir);
     } catch (error) {
       if (error.code === 'ENOENT') { coverageReasons.push(`${path.relative(root, base).split(path.sep).join('/')}: root not installed (treated as confirmed empty)`); return; }
       fail(`${base}: cannot inspect root: ${error.message}`); return;

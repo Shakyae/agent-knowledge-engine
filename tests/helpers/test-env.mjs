@@ -18,9 +18,9 @@ export async function tempRoot(prefix = 'ake-test-') {
   const temp = await realpath(os.tmpdir());
   const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: temp, encoding: 'utf8', env: cleanTestEnv() });
   if (probe.status === 0 && probe.stdout.trim() === 'true') throw new Error('TMPDIR points inside a Git work tree; unset TMPDIR or point it outside any repository');
-  const directory = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const directory = await mkdtemp(path.join(temp, prefix));
   assertOutsideGitWorkTree(directory);
-  return directory;
+  return realpath(directory);
 }
 
 // Keep the runner and every inherited CLI child isolated from caller-specific routing/config state.

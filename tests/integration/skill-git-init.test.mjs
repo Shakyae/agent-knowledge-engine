@@ -74,7 +74,7 @@ test('explicit-selection workflow helper initializes exact non-repo and full AKE
   assert.equal(initialized.status, 0, initialized.stderr);
   const result = JSON.parse(initialized.stdout);
   assert.deepEqual(result, { status: 'initialized', target, workTreeRoot: target, identity: inspected.identity, unborn: true, gitInitRan: true });
-  assert.equal(git(['rev-parse', '--show-toplevel'], target).stdout.trim(), target);
+  assert.equal(samePath(git(['rev-parse', '--show-toplevel'], target).stdout.trim(), target), true);
   const beforeCommit = git(['rev-parse', '--verify', 'HEAD'], target);
   assert.notEqual(beforeCommit.status, 0, 'git init must leave HEAD unborn');
 
@@ -89,7 +89,7 @@ test('explicit-selection workflow helper initializes exact non-repo and full AKE
   const env = cleanTestEnv({ HOME: root, DSH_AGENTS_HOME: path.join(root, '.agents') });
   const status = runCli(target, ['status', '--json'], env);
   assert.equal(status.status, 0, status.stderr);
-  assert.equal(JSON.parse(status.stdout).project, target);
+  assert.equal(samePath(JSON.parse(status.stdout).project, target), true);
   const search = runCli(target, ['search', 'unborn-flow', '--json'], env);
   assert.equal(search.status, 0, search.stderr);
   assert.equal(JSON.parse(search.stdout).coverage, 'complete');

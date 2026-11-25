@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdir, writeFile, chmod, rm, readFile, readdir, cp, lstat, symlink, readlink, realpath } from 'node:fs/promises';
+import { mkdir, writeFile, rm, readFile, readdir, cp, lstat, symlink, readlink, realpath } from 'node:fs/promises';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -303,31 +303,44 @@ test('copied user-level CLI dry-run emits one JSON report without installation w
   await writeFile(path.join(bundle, 'resources', 'ake-source', 'package.json'), JSON.stringify({ version: '0.1.0', repository: { url: 'https://github.com/Shakyae/agent-knowledge-engine.git' } }));
   await writeFile(path.join(bundle, 'resources', 'ake-source', 'scripts', 'ake.mjs'), '');
   const lockPath = path.join(home, '.agents', '.skill-lock.json'); await writeFile(lockPath, JSON.stringify({ skills: { ake: { sourceType: 'local', source: 'local' } } }));
+  const homeEnv = { HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'), PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  if (process.platform === 'win32') { const rootPath = path.win32.parse(home).root; homeEnv.HOMEDRIVE = rootPath.replace(/[\\/]+$/, ''); homeEnv.HOMEPATH = path.win32.relative(rootPath, home); }
+  const testEnv = extra => cleanTestEnv({ ...homeEnv, ...extra });
   const sha = 'c'.repeat(40);
-  const gitStub = path.join(bin, 'git');
-  await writeFile(gitStub, ['#!/usr/bin/env node', `const a=process.argv.slice(2); if(a.includes('ls-remote')) process.stdout.write('ref: refs/heads/trunk\\tHEAD\\n${sha}\\tHEAD\\n'); else if(a.includes('rev-parse')) process.stdout.write('${sha}\\n'); else if(a.includes('ls-tree')) process.stdout.write('');`].join('\n')); await chmod(gitStub, 0o755);
-  const skillsStub = path.join(bin, 'skills'); await writeFile(skillsStub, ['#!/bin/sh', 'echo 1.8.1'].join('\n')); await chmod(skillsStub, 0o755);
-  const result = spawnSync(process.execPath, [path.join(bundle, 'scripts', 'ake.mjs'), 'update', '--dry-run', '--json'], { encoding: 'utf8', env: cleanTestEnv({ HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH}` }) });
-  assert.equal(result.status, 0, result.stderr + result.stdout); assert.equal(result.stderr, '');
+  const resolveRemote = async () => ({ sourceUrl: 'https://github.com/Shakyae/agent-knowledge-engine.git', repo: 'Shakyae/agent-knowledge-engine', defaultBranch: 'trunk', targetCommit: sha, entries: [] });
+  const priorEnv = new Map([...Object.keys(homeEnv), 'DSH_AGENTS_HOME'].map(key => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(homeEnv)) process.env[key] = value;
+  delete process.env.DSH_AGENTS_HOME;
+  const { main } = await import(pathToFileURL(path.join(bundle, 'scripts', 'ake.mjs')).href);
+  const invoke = async args => {
+    const lines = [], originalLog = console.log; console.log = (...values) => lines.push(values.join(' '));
+    try { return { status: await main(args, root, { resolveRemote }), stdout: lines.join('\n'), lines }; }
+    finally { console.log = originalLog; }
+  };
+  let result, dryText;
+  try { result = await invoke(['update', '--dry-run', '--json']); dryText = await invoke(['update', '--dry-run']); }
+  finally { for (const [key, value] of priorEnv) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+  assert.equal(result.status, 0, result.stdout); assert.equal(result.lines.length, 1, 'JSON mode emits exactly one report');
   const report = JSON.parse(result.stdout); assert.equal(report.status, 'dry_run'); assert.equal(report.targetCommit, sha);
-  const dryText = spawnSync(process.execPath, [path.join(bundle, 'scripts', 'ake.mjs'), 'update', '--dry-run'], { encoding: 'utf8', env: cleanTestEnv({ HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH}` }) });
-  assert.equal(dryText.status, 0, dryText.stderr); assert.match(dryText.stdout, /状态: dry_run/);
+  assert.equal(report.installationBefore.scope, 'user'); assert.equal(report.installationBefore.mode, 'canonical');
+  assert.equal(report.installationBefore.canonicalPath, await realpath(canonical));
+  assert.equal(dryText.status, 0); assert.match(dryText.stdout, /状态: dry_run/);
   assert.equal(await readFile(path.join(canonical, 'SKILL.md'), 'utf8'), '# isolated');
   await assert.rejects(readFile(path.join(home, '.agents', 'ake', 'update.lock')), { code: 'ENOENT' });
   const customAgentsHome = path.join(home, 'custom-agents'), customSkill = path.join(customAgentsHome, 'skills', 'ake');
   await mkdir(path.dirname(customSkill), { recursive: true }); await cp(canonical, customSkill, { recursive: true });
   await writeFile(path.join(customAgentsHome, '.skill-lock.json'), JSON.stringify({ skills: { ake: { sourceType: 'local', source: 'local' } } }));
   const customCli = path.join(customSkill, 'resources', 'ake-source', 'scripts', 'ake.mjs');
-  const customUpdate = spawnSync(process.execPath, [customCli, 'update', '--dry-run', '--json'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: cleanTestEnv({ HOME: home, DSH_AGENTS_HOME: customAgentsHome, PATH: `${bin}${path.delimiter}${process.env.PATH}` }) });
+  const customUpdate = spawnSync(process.execPath, [customCli, 'update', '--dry-run', '--json'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: testEnv({ DSH_AGENTS_HOME: customAgentsHome }) });
   assert.equal(customUpdate.status, 1); const rejected = JSON.parse(customUpdate.stdout); assert.equal(rejected.errorCode, 'IDENTITY_AMBIGUOUS');
   assert.ok(rejected.message.includes('Skills CLI is only verified to write HOME/.agents'));
-  const customText = spawnSync(process.execPath, [customCli, 'update'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: cleanTestEnv({ HOME: home, DSH_AGENTS_HOME: customAgentsHome, PATH: `${bin}${path.delimiter}${process.env.PATH}` }) });
+  const customText = spawnSync(process.execPath, [customCli, 'update'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: testEnv({ DSH_AGENTS_HOME: customAgentsHome }) });
   assert.equal(customText.status, 1); assert.match(customText.stdout, /错误码: IDENTITY_AMBIGUOUS/);
-  const customJson = spawnSync(process.execPath, [customCli, 'update', '--json'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: cleanTestEnv({ HOME: home, DSH_AGENTS_HOME: customAgentsHome, PATH: `${bin}${path.delimiter}${process.env.PATH}` }) });
+  const customJson = spawnSync(process.execPath, [customCli, 'update', '--json'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: testEnv({ DSH_AGENTS_HOME: customAgentsHome }) });
   assert.equal(customJson.status, 1); assert.equal(JSON.parse(customJson.stdout).errorCode, 'IDENTITY_AMBIGUOUS');
   await assert.rejects(readFile(path.join(customAgentsHome, 'ake', 'update.lock')), { code: 'ENOENT' });
   await assert.rejects(readFile(path.join(customAgentsHome, 'ake', 'backups')), { code: 'ENOENT' });
-  const status = spawnSync(process.execPath, [customCli, 'status', '--json'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: cleanTestEnv({ HOME: home, DSH_AGENTS_HOME: customAgentsHome }) });
+  const status = spawnSync(process.execPath, [customCli, 'status', '--json'], { encoding: 'utf8', cwd: fileURLToPath(new URL('../..', import.meta.url)), env: testEnv({ DSH_AGENTS_HOME: customAgentsHome }) });
   assert.equal(status.status, 0, status.stderr); assert.equal(JSON.parse(status.stdout).installation.canonicalPath, await import('node:fs/promises').then(fs => fs.realpath(customSkill)));
 });
 
@@ -348,9 +361,8 @@ test('isolated bare repository fixture and PATH Skills stub exercise update disp
   await mkdir(install, { recursive: true });
   for (const [relativePath, contents] of Object.entries({ ...targetFiles, 'SKILL.md': '# old' })) { const full = path.join(install, ...relativePath.split('/')); await mkdir(path.dirname(full), { recursive: true }); await writeFile(full, contents); }
   let stubBehavior = 'ok'; let captured;
-  const stubPath = path.join(bin, 'skills');
-  await writeFile(stubPath, `#!/usr/bin/env node\nimport fs from 'node:fs'; import path from 'node:path'; fs.writeFileSync(${JSON.stringify(path.join(root, 'captured.json'))}, JSON.stringify(process.argv.slice(2))); const mode=process.env.STUB_MODE; if(mode==='half') fs.writeFileSync(path.join(process.env.AKE_TEST_CANONICAL,'SKILL.md'),'half'); if(mode==='ok'||mode==='wrong-ref') { for(const [name,data] of Object.entries(JSON.parse(process.env.AKE_TEST_TARGETS))) { const file=path.join(process.env.AKE_TEST_CANONICAL,...name.split('/')); fs.mkdirSync(path.dirname(file),{recursive:true}); fs.writeFileSync(file,data); } const lock=JSON.parse(fs.readFileSync(process.env.AKE_TEST_LOCK,'utf8')); lock.skills.ake={sourceType:'github',source:'o/r',sourceUrl:'https://github.com/o/r.git',ref:mode==='wrong-ref'?'0'.repeat(40):process.env.AKE_TEST_TARGET,skillPath:'skills/ake/SKILL.md'}; fs.writeFileSync(process.env.AKE_TEST_LOCK,JSON.stringify(lock)); } if(mode==='extra') { fs.mkdirSync(path.join(process.env.AKE_TEST_AGENTS,'skills','unrelated'),{recursive:true}); fs.writeFileSync(path.join(process.env.AKE_TEST_AGENTS,'skills','unrelated','generated'),'x'); } if(mode==='mutate-sibling') fs.writeFileSync(path.join(process.env.AKE_TEST_AGENTS,'skills','other','keep'),'changed'); if(mode==='link') { const link=path.join(path.dirname(process.env.AKE_TEST_AGENTS),'.claude','skills','ake'); fs.mkdirSync(path.dirname(link),{recursive:true}); fs.symlinkSync(path.relative(path.dirname(link),process.env.AKE_TEST_CANONICAL),link); } process.exit(['ok','extra','wrong-ref','link','mutate-sibling'].includes(mode)?0:1);\n`);
-  await chmod(stubPath, 0o755);
+  const stubPath = path.join(bin, 'skills-stub.mjs');
+  await writeFile(stubPath, `import fs from 'node:fs'; import path from 'node:path'; fs.writeFileSync(${JSON.stringify(path.join(root, 'captured.json'))}, JSON.stringify(process.argv.slice(2))); const mode=process.env.STUB_MODE; if(mode==='half') fs.writeFileSync(path.join(process.env.AKE_TEST_CANONICAL,'SKILL.md'),'half'); if(mode==='ok'||mode==='wrong-ref') { for(const [name,data] of Object.entries(JSON.parse(process.env.AKE_TEST_TARGETS))) { const file=path.join(process.env.AKE_TEST_CANONICAL,...name.split('/')); fs.mkdirSync(path.dirname(file),{recursive:true}); fs.writeFileSync(file,data); } const lock=JSON.parse(fs.readFileSync(process.env.AKE_TEST_LOCK,'utf8')); lock.skills.ake={sourceType:'github',source:'o/r',sourceUrl:'https://github.com/o/r.git',ref:mode==='wrong-ref'?'0'.repeat(40):process.env.AKE_TEST_TARGET,skillPath:'skills/ake/SKILL.md'}; fs.writeFileSync(process.env.AKE_TEST_LOCK,JSON.stringify(lock)); } if(mode==='extra') { fs.mkdirSync(path.join(process.env.AKE_TEST_AGENTS,'skills','unrelated'),{recursive:true}); fs.writeFileSync(path.join(process.env.AKE_TEST_AGENTS,'skills','unrelated','generated'),'x'); } if(mode==='mutate-sibling') fs.writeFileSync(path.join(process.env.AKE_TEST_AGENTS,'skills','other','keep'),'changed'); if(mode==='link') { const link=path.join(path.dirname(process.env.AKE_TEST_AGENTS),'.claude','skills','ake'); fs.mkdirSync(path.dirname(link),{recursive:true}); fs.symlinkSync(path.relative(path.dirname(link),process.env.AKE_TEST_CANONICAL),link); } process.exit(['ok','extra','wrong-ref','link','mutate-sibling'].includes(mode)?0:1);\n`);
   const agentsHome = path.join(home, '.agents'), lockPath = path.join(home, '.agents', '.skill-lock.json');
   const siblingSkill = path.join(agentsHome, 'skills', 'other'); await mkdir(siblingSkill, { recursive: true }); await writeFile(path.join(siblingSkill, 'keep'), 'original'); await mkdir(path.join(home, '.claude', 'skills'), { recursive: true });
   const originalLock = Buffer.from('{"skills":{"ake":{"sourceType":"local","source":"local"},"other":{"sourceType":"github"}}}\n'); await writeFile(lockPath, originalLock);
@@ -360,7 +372,7 @@ test('isolated bare repository fixture and PATH Skills stub exercise update disp
     detectCustomization: async () => 'clean', acquireLock: async () => ({ release: async () => {} }),
     createBackup: args => createBackup(args),
     restoreBackup: (backup, args) => restoreBackup(backup, args),
-    skillsCli: stubPath, runSkillsAdd: async (cmd, args) => { captured = args; await import('node:child_process').then(({ spawnSync }) => { const result = spawnSync(cmd, args, { env: cleanTestEnv({ HOME: home, PATH: `${bin}${path.delimiter}${process.env.PATH}`, STUB_MODE: stubBehavior, AKE_TEST_CANONICAL: install, AKE_TEST_AGENTS: agentsHome, AKE_TEST_TARGET: sha, AKE_TEST_TARGETS: JSON.stringify(targetFiles), AKE_TEST_LOCK: lockPath }) }); if (result.status !== 0) throw Object.assign(new Error(`stub failed after possible partial write (status=${result.status}, error=${result.error?.message ?? ''}, stderr=${result.stderr?.toString() ?? ''})`), { code: 'INSTALL' }); }); },
+    skillsCli: stubPath, runSkillsAdd: async (cmd, args, spawnOptions) => { captured = args; const { spawnSync } = await import('node:child_process'); const result = spawnSync(process.execPath, [cmd, ...args], { cwd: root, env: { ...spawnOptions.env, STUB_MODE: stubBehavior, AKE_TEST_CANONICAL: install, AKE_TEST_AGENTS: agentsHome, AKE_TEST_TARGET: sha, AKE_TEST_TARGETS: JSON.stringify(targetFiles), AKE_TEST_LOCK: lockPath }, encoding: 'utf8' }); if (result.status !== 0) throw Object.assign(new Error(`stub failed after possible partial write (status=${result.status}, error=${result.error?.message ?? ''}, stderr=${result.stderr ?? ''})`), { code: 'INSTALL' }); },
     verifyInstalled: async () => { throw new Error('verification deliberately fails after successful install'); } };
   const result = await runUpdate(options);
   assert.equal(result.status, 'failed'); assert.equal(result.errorCode, 'VERIFY', result.message); assert.equal(result.rollback, 'succeeded');

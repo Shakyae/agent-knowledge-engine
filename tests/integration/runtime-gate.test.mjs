@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { access, cp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { realpathSync, statSync } from 'node:fs';
+import { access, cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { cleanTestEnv, tempRoot } from '../helpers/test-env.mjs';
 import { nodeVersionFailure } from '../../src/lib/runtime.mjs';
@@ -21,6 +22,11 @@ function run(entry, args, env = {}) {
     encoding: 'utf8',
     env: cleanTestEnv(env),
   });
+}
+
+function identityPath(value) {
+  const info = statSync(value, { bigint: true });
+  return `${info.dev}:${info.ino}:${info.birthtimeNs}`;
 }
 
 function assertVersionFailure(result) {
@@ -104,6 +110,106 @@ test('CLI and standalone Skill helpers enforce the runtime before task work', as
     assert.match(bootstrap.stderr, /Restore\/update the ake Skill/);
   } else assertVersionFailure(bootstrap);
   await assert.rejects(access(path.join(bootstrapTarget, '.ake')), { code: 'ENOENT' });
+  const bootstrapChild = path.join(bootstrapTarget, 'nested-project'); await mkdir(bootstrapChild);
+  const childBootstrap = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', bootstrapChild, '--dry-run']);
+  if (supported) { assert.equal(childBootstrap.status, 1, childBootstrap.stdout); assert.match(childBootstrap.stderr, /Skill bootstrap resources are incomplete/); }
+  else assertVersionFailure(childBootstrap);
+  await assert.rejects(access(path.join(bootstrapChild, '.ake')), { code: 'ENOENT' });
+  const aliasDirectory = path.join(temp, 'bootstrap-skill-alias');
+  if (process.platform === 'win32') await symlink(skillCopy, aliasDirectory, 'junction'); else await symlink(skillCopy, aliasDirectory, 'dir');
+  const aliasEntry = path.join(aliasDirectory, 'bootstrap.mjs');
+  assert.equal(realpathSync.native(aliasEntry), realpathSync.native(path.join(skillCopy, 'bootstrap.mjs')));
+  const aliasBootstrap = run(aliasEntry, ['--dir', bootstrapTarget, '--dry-run']);
+  if (supported) { assert.equal(aliasBootstrap.status, 1, aliasBootstrap.stdout); assert.match(aliasBootstrap.stderr, /Skill bootstrap resources are incomplete/); }
+  else assertVersionFailure(aliasBootstrap);
+  await assert.rejects(access(path.join(bootstrapTarget, '.ake')), { code: 'ENOENT' });
+
+  const priorExitCode = process.exitCode, importMessages = [], oldLog = console.log, oldError = console.error;
+  console.log = (...args) => importMessages.push(args.join(' ')); console.error = (...args) => importMessages.push(args.join(' '));
+  let bootstrapModule;
+  try { bootstrapModule = await import('../../skills/ake/bootstrap.mjs'); }
+  finally { console.log = oldLog; console.error = oldError; }
+  assert.equal(process.exitCode, priorExitCode, 'importing the helper does not run its CLI main');
+  assert.deepEqual(importMessages, [], 'importing the helper has no CLI output side effects');
+  const { isDirectoryAncestor } = bootstrapModule;
+  const canonicalRoot = realpathSync.native(bootstrapTarget), canonicalChild = realpathSync.native(bootstrapChild);
+  assert.equal(isDirectoryAncestor(canonicalRoot, canonicalRoot), true, 'identical directory objects are accepted');
+  assert.equal(isDirectoryAncestor(canonicalRoot, canonicalChild), true, 'real child directories are accepted');
+  assert.equal(isDirectoryAncestor(canonicalRoot, path.join(canonicalRoot, 'missing-child')), false, 'unresolvable paths fail closed');
+  const outsideRoot = path.join(temp, 'bootstrap-outside'); await mkdir(outsideRoot);
+  const outsideLink = path.join(bootstrapTarget, 'outside-junction');
+  if (process.platform === 'win32') await symlink(outsideRoot, outsideLink, 'junction'); else await symlink(outsideRoot, outsideLink, 'dir');
+  assert.equal(isDirectoryAncestor(canonicalRoot, realpathSync.native(outsideLink)), false, 'resolved junction targets outside the root are rejected');
+
+  const siblingTarget = path.join(temp, 'bootstrap-target-sibling'); await mkdir(siblingTarget);
+  const gitDirectory = path.join(bootstrapTarget, '.git');
+  await writeFile(path.join(siblingTarget, '.git'), `gitdir: ${gitDirectory.replaceAll('\\', '/')}\n`);
+  const worktreeConfig = spawnSync('git', ['config', '--file', path.join(gitDirectory, 'config'), 'core.worktree', bootstrapTarget], { encoding: 'utf8', env: cleanTestEnv() });
+  assert.equal(worktreeConfig.status, 0, worktreeConfig.stderr);
+  const siblingGitRoot = spawnSync('git', ['-C', siblingTarget, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env: cleanTestEnv() });
+  assert.equal(siblingGitRoot.status, 0, siblingGitRoot.stderr);
+  assert.equal(identityPath(siblingGitRoot.stdout.trim()), identityPath(bootstrapTarget), 'fixture Git metadata must report the distinct same-prefix sibling root');
+  assert.equal(isDirectoryAncestor(canonicalRoot, realpathSync.native(siblingTarget)), false, 'same-prefix siblings are not descendants by directory identity');
+  const siblingBootstrap = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', siblingTarget, '--dry-run']);
+  if (supported) { assert.equal(siblingBootstrap.status, 1, siblingBootstrap.stdout); assert.match(siblingBootstrap.stderr, /GIT_METADATA_INVALID:/); }
+  else assertVersionFailure(siblingBootstrap);
+  await assert.rejects(access(path.join(siblingTarget, '.ake')), { code: 'ENOENT' });
+
+  if (process.platform === 'win32' && supported) {
+    const shortPathFor = directory => {
+      const result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', `for %I in ("${directory}") do @echo %~sI`], { cwd: root, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+      const value = result.stdout.trim();
+      assert.ok(value.includes('~'), `Windows runner did not provide an 8.3 path for ${directory}: ${value}`);
+      return value;
+    };
+    const identity = value => { const info = statSync(value, { bigint: true }); return `${info.dev}:${info.ino}:${info.birthtimeNs}`; };
+    const gitRootResult = spawnSync('git', ['-C', bootstrapTarget, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env: cleanTestEnv() });
+    assert.equal(gitRootResult.status, 0, gitRootResult.stderr);
+    const gitRoot = gitRootResult.stdout.trim(), shortTarget = shortPathFor(bootstrapTarget);
+    const diagnostics = {
+      requested: shortTarget,
+      targetRealpath: realpathSync(shortTarget),
+      targetNativeRealpath: realpathSync.native(shortTarget),
+      gitRoot,
+      gitRootRealpath: realpathSync(gitRoot),
+      gitRootNativeRealpath: realpathSync.native(gitRoot),
+      targetIdentity: identity(shortTarget),
+      gitRootIdentity: identity(gitRoot),
+      relative: path.win32.relative(realpathSync.native(gitRoot), realpathSync.native(shortTarget)),
+    };
+    console.log(`Windows short-path bootstrap probe: ${JSON.stringify(diagnostics)}`);
+    assert.equal(identity(shortTarget), identity(gitRoot), 'short target and Git root must be the same directory object');
+    const shortBootstrap = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', shortTarget, '--dry-run']);
+    assert.equal(shortBootstrap.status, 1, shortBootstrap.stdout);
+    assert.match(shortBootstrap.stderr, /Skill bootstrap resources are incomplete/);
+    assert.doesNotMatch(shortBootstrap.stderr, /inconsistent work-tree root/);
+    const shortChild = shortPathFor(bootstrapChild);
+    assert.notEqual(identity(shortChild), identity(gitRoot), 'nested target must be a distinct directory object');
+    console.log(`Windows short-path parent probe: ${JSON.stringify({ requested: shortChild, targetIdentity: identity(shortChild), gitRoot, gitRootIdentity: identity(gitRoot), relative: path.win32.relative(realpathSync.native(gitRoot), realpathSync.native(shortChild)) })}`);
+    const nestedResult = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', shortChild, '--dry-run']);
+    assert.equal(nestedResult.status, 1, nestedResult.stdout);
+    assert.match(nestedResult.stderr, /Skill bootstrap resources are incomplete/);
+    assert.doesNotMatch(nestedResult.stderr, /inconsistent work-tree root/);
+    await assert.rejects(access(path.join(bootstrapChild, '.ake')), { code: 'ENOENT' });
+
+    const tempVolume = path.win32.parse(temp).root, checkoutVolume = path.win32.parse(root).root;
+    if (tempVolume.toUpperCase() !== checkoutVolume.toUpperCase()) {
+      const workArea = path.join(root, 'tests', '.work'); await mkdir(workArea, { recursive: true });
+      const crossVolumeRepo = await mkdtemp(path.join(workArea, 'ake-cross-volume-root-')); t.after(() => rm(crossVolumeRepo, { recursive: true, force: true }));
+      const crossVolumeTarget = path.join(temp, 'ake-cross-volume-target'); await mkdir(crossVolumeTarget);
+      const crossGitDir = path.join(crossVolumeRepo, '.git');
+      const crossGitInit = spawnSync('git', ['init', '--quiet', crossVolumeRepo], { encoding: 'utf8', env: cleanTestEnv() }); assert.equal(crossGitInit.status, 0, crossGitInit.stderr);
+      await writeFile(path.join(crossVolumeTarget, '.git'), `gitdir: ${crossGitDir.replaceAll('\\', '/')}\n`);
+      const crossConfig = spawnSync('git', ['config', '--file', path.join(crossGitDir, 'config'), 'core.worktree', crossVolumeRepo], { encoding: 'utf8', env: cleanTestEnv() }); assert.equal(crossConfig.status, 0, crossConfig.stderr);
+      const crossGitRoot = spawnSync('git', ['-C', crossVolumeTarget, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env: cleanTestEnv() }); assert.equal(crossGitRoot.status, 0, crossGitRoot.stderr);
+      assert.equal(identityPath(crossGitRoot.stdout.trim()), identityPath(crossVolumeRepo), 'cross-volume Git fixture must point to the other volume root');
+      assert.equal(isDirectoryAncestor(realpathSync.native(crossVolumeRepo), realpathSync.native(crossVolumeTarget)), false, 'different-volume paths cannot be parent and child');
+      const crossBootstrap = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', crossVolumeTarget, '--dry-run']);
+      assert.equal(crossBootstrap.status, 1, crossBootstrap.stdout); assert.match(crossBootstrap.stderr, /GIT_METADATA_INVALID:|inconsistent work-tree root/);
+      await assert.rejects(access(path.join(crossVolumeTarget, '.ake')), { code: 'ENOENT' });
+    } else console.log(`Windows cross-volume bootstrap probe unavailable: TEMP and checkout are both on ${tempVolume}`);
+  }
 });
 
 test('unsupported runtime keeps CLI JSON failure contracts and avoids update work', () => {

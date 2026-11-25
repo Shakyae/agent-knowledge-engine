@@ -10,6 +10,12 @@ import { assertOutsideGitWorkTree, cleanTestEnv, tempRoot } from '../helpers/tes
 
 const sha = 'a'.repeat(40);
 async function makeWorkDir(prefix) { return tempRoot(prefix); }
+async function updateRoots(t, prefix) {
+  const root = await makeWorkDir(prefix); t.after(() => rm(root, { recursive: true, force: true }));
+  const home = path.join(root, 'home'), agentsHome = path.join(home, '.agents'), tempRoot = path.join(root, 'temp');
+  await mkdir(agentsHome, { recursive: true }); await mkdir(tempRoot);
+  return { root, home, agentsHome, lockPath: path.join(agentsHome, '.skill-lock.json'), tempRoot };
+}
 test('Windows npm resolution accepts copied Path and rejects missing candidates', async t => {
   const { resolveWindowsCli } = await import('../../src/lib/update.mjs');
   const root = await makeWorkDir('ake-win-npm-path-'); t.after(() => rm(root, { recursive: true, force: true }));
@@ -64,6 +70,7 @@ test('customization compares installed tree with old pinned ref, not new target'
   const bare = path.join(root, 'repo.git'), work = path.join(root, 'work'), canonical = path.join(root, 'installed');
   execFileSync('git', ['init', '--bare', bare], { stdio: 'ignore' }); execFileSync('git', ['clone', bare, work], { stdio: 'ignore' });
   await mkdir(path.join(work, 'skills', 'ake'), { recursive: true }); await writeFile(path.join(work, 'skills', 'ake', 'SKILL.md'), '# old');
+  execFileSync('git', ['-C', work, 'config', 'core.autocrlf', 'false']); execFileSync('git', ['-C', work, 'config', 'core.filemode', 'false']);
   execFileSync('git', ['-C', work, 'add', '.']); execFileSync('git', ['-C', work, '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'old'], { stdio: 'ignore' });
   execFileSync('git', ['-C', work, 'push', 'origin', 'HEAD:refs/heads/main'], { stdio: 'ignore' });
   const oldRef = execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -86,6 +93,8 @@ test('binary target tree preserves raw bytes, verifies, and detects local byte m
   const files = { 'SKILL.md': '---\\nname: ake\\n---\\n# binary fixture\\n', 'bootstrap.mjs': 'export {};', 'resources/ake-source/package.json': JSON.stringify({ name: 'agent-knowledge-engine', repository: { url: official } }), 'resources/ake-source/scripts/ake.mjs': '// cli' };
   for (const [relative, contents] of Object.entries(files)) { const target = path.join(work, 'skills', 'ake', ...relative.split('/')); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, contents); }
   await writeFile(path.join(work, 'skills', 'ake', 'binary.dat'), binary);
+  execFileSync('git', ['-C', work, 'config', 'core.autocrlf', 'false']); execFileSync('git', ['-C', work, 'config', 'core.filemode', 'false']); execFileSync('git', ['-C', work, 'config', 'core.symlinks', 'true']);
+  await symlink('SKILL.md', path.join(work, 'skills', 'ake', 'skill-link'), 'file');
   execFileSync('git', ['-C', work, 'add', '.']); execFileSync('git', ['-C', work, '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'binary target'], { stdio: 'ignore' });
   execFileSync('git', ['-C', work, 'push', 'origin', 'HEAD:refs/heads/main'], { stdio: 'ignore' }); execFileSync('git', ['--git-dir', bare, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
   const targetCommit = execFileSync('git', ['-C', work, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -93,12 +102,23 @@ test('binary target tree preserves raw bytes, verifies, and detects local byte m
   const remote = await resolveRemote({ repoUrl: official, gitRunner, tempDirectory: root });
   assert.equal(remote.targetCommit, targetCommit); const binaryEntry = remote.entries.find(item => item.relativePath === 'binary.dat');
   assert.ok(Buffer.isBuffer(binaryEntry.bytes)); assert.deepEqual(binaryEntry.bytes, binary);
-  const canonicalPath = path.join(root, 'installed'); await cp(path.join(work, 'skills', 'ake'), canonicalPath, { recursive: true });
+  const canonicalPath = path.join(root, 'installed'); await cp(path.join(work, 'skills', 'ake'), canonicalPath, { recursive: true, verbatimSymlinks: true });
   const lockPath = path.join(root, 'skills-lock.json'), lock = { skills: { ake: { sourceType: 'github', source: 'o/r', sourceUrl: official, ref: targetCommit, skillPath: 'skills/ake/SKILL.md' } } };
   await writeFile(lockPath, JSON.stringify(lock));
   const installation = { canonicalPath, lockPath, lock, sourceInfo: { sourceUrl: official, repo: 'o/r' } };
   assert.equal(await detectCustomization(installation, remote, { gitRunner, tempDirectory: root }), 'clean');
   await verifyInstalled(installation, remote);
+  const skillFile = path.join(canonicalPath, 'SKILL.md');
+  assert.equal(await detectCustomization(installation, remote, { gitRunner, tempDirectory: root, platform: 'win32' }), 'clean', '0644 Git mode and normal writable Windows mode are equivalent');
+  await verifyInstalled(installation, remote, { platform: 'win32' });
+  await chmod(skillFile, 0o444);
+  assert.equal(await detectCustomization(installation, remote, { gitRunner, tempDirectory: root, platform: 'win32' }), 'modified', 'Windows read-only drift remains observable');
+  await assert.rejects(verifyInstalled(installation, remote, { platform: 'win32' }), /target file mismatch: SKILL.md/);
+  await chmod(skillFile, 0o644);
+  const link = path.join(canonicalPath, 'skill-link'); await rm(link); await symlink('bootstrap.mjs', link, 'file');
+  assert.equal(await detectCustomization(installation, remote, { gitRunner, tempDirectory: root, platform: 'win32' }), 'modified', 'symlink target drift remains observable');
+  await assert.rejects(verifyInstalled(installation, remote, { platform: 'win32' }), /target symlink mismatch: skill-link/);
+  await rm(link); await symlink('SKILL.md', link, 'file');
   const modified = Buffer.from(await readFile(path.join(canonicalPath, 'binary.dat'))); modified[1] ^= 0xff; await writeFile(path.join(canonicalPath, 'binary.dat'), modified);
   assert.equal(await detectCustomization(installation, remote, { gitRunner, tempDirectory: root }), 'modified');
   await assert.rejects(verifyInstalled(installation, remote), /target file mismatch/);
@@ -127,12 +147,17 @@ test('local source baseline accepts clean copies, flags changes, and leaves inva
   const root = await makeWorkDir('ake-local-baseline-'); t.after(() => rm(root, { recursive: true, force: true }));
   const source = path.join(root, 'source'), sourceSkill = path.join(source, 'skills', 'ake'), canonicalPath = path.join(root, 'home', '.agents', 'skills', 'ake');
   await mkdir(sourceSkill, { recursive: true }); const sourceRealPath = await realpath(source); await writeFile(path.join(source, 'package.json'), JSON.stringify({ name: 'agent-knowledge-engine', repository: { url: 'https://github.com/o/r.git' } }));
-  await writeFile(path.join(sourceSkill, 'SKILL.md'), '# official'); await writeFile(path.join(sourceSkill, 'extra.txt'), 'same');
-  execFileSync('git', ['init', source], { stdio: 'ignore' }); execFileSync('git', ['-C', source, 'add', '.']); execFileSync('git', ['-C', source, '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'source'], { stdio: 'ignore' });
-  await mkdir(path.dirname(canonicalPath), { recursive: true }); await cp(sourceSkill, canonicalPath, { recursive: true });
+  await writeFile(path.join(sourceSkill, 'SKILL.md'), '# official'); await writeFile(path.join(sourceSkill, 'extra.txt'), 'same'); await symlink('SKILL.md', path.join(sourceSkill, 'skill-link'), 'file');
+  execFileSync('git', ['init', source], { stdio: 'ignore' }); execFileSync('git', ['-C', source, 'config', 'core.autocrlf', 'false']); execFileSync('git', ['-C', source, 'config', 'core.filemode', 'false']); execFileSync('git', ['-C', source, 'config', 'core.symlinks', 'true']); execFileSync('git', ['-C', source, 'add', '.']); execFileSync('git', ['-C', source, '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'source'], { stdio: 'ignore' });
+  await mkdir(path.dirname(canonicalPath), { recursive: true }); await cp(sourceSkill, canonicalPath, { recursive: true, verbatimSymlinks: true });
   const lockPath = path.join(root, 'home', '.agents', '.skill-lock.json'); await writeFile(lockPath, JSON.stringify({ skills: { ake: { sourceType: 'local', source } } }));
   const installation = { agentsHome: path.join(root, 'home', '.agents'), canonicalPath, loadPath: canonicalPath, scope: 'user', mode: 'canonical', sourceType: 'local', agentPaths: [{ path: canonicalPath, mode: 'canonical' }], lockPath, lock: { skills: { ake: { sourceType: 'local', source } } } };
   const details = {}; assert.equal(await detectCustomization(installation, {}, { report: details }), 'clean'); assert.equal(details.baseline, `local-source:${sourceRealPath}`);
+  assert.equal(await detectCustomization(installation, {}, { platform: 'win32' }), 'clean', 'local-source and installed writable Windows modes compare without POSIX execute bits');
+  const installedSkillFile = path.join(canonicalPath, 'SKILL.md'); await chmod(installedSkillFile, 0o444);
+  assert.equal(await detectCustomization(installation, {}, { platform: 'win32' }), 'modified', 'read-only drift stays visible for local-source installs'); await chmod(installedSkillFile, 0o644);
+  const installedLink = path.join(canonicalPath, 'skill-link'); await rm(installedLink); await symlink('extra.txt', installedLink, 'file');
+  assert.equal(await detectCustomization(installation, {}, { platform: 'win32' }), 'modified', 'local-source symlink target remains part of comparison'); await rm(installedLink); await symlink('SKILL.md', installedLink, 'file');
   let installed = false;
   const updateOptions = { flags: { dryRun: false, json: true, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } }, resolveInstallation: async () => installation,
     probeSkillsCli: async () => {}, resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: sha, entries: [] }),
@@ -204,19 +229,19 @@ test('dry-run plans but never locks, backs up, or installs', async () => {
   assert.equal(result.status, 'dry_run'); assert.equal(locked || backed || installed, false);
 });
 
-test('custom/unknown local state refuses by default and install error invokes rollback', async () => {
-  const installation = { agentsHome: '/tmp/.agents', lockPath: '/tmp/.agents/.skill-lock.json', agentPaths: [], lock: { skills: { ake: { ref: sha } } } };
-  let rollback = false, installArgs;
-  const base = { probeSkillsCli: async () => {}, snapshotInstallEffects: async () => 'same', acquireLock: async () => ({ release: async () => {} }), flags: { dryRun: false, json: false, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } }, installationOptions: {},
+test('custom/unknown local state refuses by default and install error invokes rollback', async t => {
+  const { root, home, agentsHome, lockPath, tempRoot } = await updateRoots(t, 'ake-update-customized-');
+  const installation = { agentsHome, lockPath, agentPaths: [], lock: { skills: { ake: { ref: sha } } } };
+  let rollback = false, installArgs, installReached = false;
+  const base = { home, tempRoot, probeSkillsCli: async () => {}, snapshotInstallEffects: async () => 'same', acquireLock: async () => ({ release: async () => {} }), flags: { dryRun: false, json: false, acceptCustomized: false }, package: { repository: { url: 'https://github.com/o/r.git' } }, installationOptions: {},
     resolveInstallation: async () => installation, resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'b'.repeat(40), entries: [] }),
-    acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'modified',
-    createBackup: async () => { throw new Error('must not backup until accepted'); } };
+    detectCustomization: async () => 'modified', createBackup: async () => { throw new Error('must not backup until accepted'); } };
   const refused = await runUpdate(base);
   assert.equal(refused.errorCode, 'CUSTOMIZED_CONFIRMATION_REQUIRED');
-  const accepted = await runUpdate({ ...base, flags: { ...base.flags, acceptCustomized: true }, detectCustomization: async () => 'clean', createBackup: async () => ({ backupPath: '/tmp/backup', manifest: {}, originalTree: [], originalLockBytes: null }),
-    runSkillsAdd: async (_cmd, args) => { installArgs = args; throw Object.assign(new Error('stub partial failure'), { code: 'INSTALL' }); },
+  const accepted = await runUpdate({ ...base, flags: { ...base.flags, acceptCustomized: true }, detectCustomization: async () => 'clean', createBackup: async () => ({ backupPath: path.join(root, 'backup'), manifest: {}, originalTree: [], originalLockBytes: null }),
+    runSkillsAdd: async (_cmd, args) => { installReached = true; installArgs = args; throw Object.assign(new Error('stub partial failure'), { code: 'INSTALL' }); },
     restoreBackup: async () => { rollback = true; }, verifyInstalled: async () => {} });
-  assert.equal(accepted.errorCode, 'INSTALL'); assert.equal(accepted.rollback, 'succeeded'); assert.equal(rollback, true);
+  assert.equal(accepted.errorCode, 'INSTALL'); assert.equal(accepted.rollback, 'succeeded'); assert.equal(rollback, true); assert.equal(installReached, true);
   assert.ok(installArgs.includes(`o/r@${'b'.repeat(40)}`)); assert.ok(installArgs.includes('--skill')); assert.ok(installArgs.includes('ake')); assert.equal(installArgs.includes('--copy'), false);
 });
 
@@ -259,14 +284,15 @@ test('verified installation home overrides caller HOME and inherited Windows pro
   assert.equal(path.basename(installEnv.npm_config_cache), 'cache'); assert.equal(installEnv.npm_config_cache.startsWith(path.join(tempRoot, 'ake-npm-')), true);
 });
 
-test('copy-mode lock preserves --copy without changing observed agent paths', async () => {
-  const installation = { agentsHome: '/tmp/.agents', lockPath: '/tmp/.agents/.skill-lock.json', mode: 'canonical', agentPaths: [], lock: { skills: { ake: { ref: sha, installMode: 'copy' } } } };
-  let installArgs;
-  const result = await runUpdate({ probeSkillsCli: async () => {}, flags: { dryRun: false, json: true, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
+test('copy-mode lock preserves --copy without changing observed agent paths', async t => {
+  const { root, home, agentsHome, lockPath, tempRoot } = await updateRoots(t, 'ake-update-copy-mode-');
+  const installation = { agentsHome, lockPath, mode: 'canonical', agentPaths: [], lock: { skills: { ake: { ref: sha, installMode: 'copy' } } } };
+  let installArgs, installReached = false;
+  const result = await runUpdate({ home, tempRoot, probeSkillsCli: async () => {}, flags: { dryRun: false, json: true, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
     resolveInstallation: async () => installation, resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'b'.repeat(40), entries: [] }),
-    acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'before', createBackup: async () => ({ backupPath: '/tmp/backup', manifest: {}, originalTree: [], originalLockBytes: null }),
-    runSkillsAdd: async (_command, args) => { installArgs = args; throw Object.assign(new Error('stop after capture'), { code: 'INSTALL' }); }, restoreBackup: async () => {}, verifyInstalled: async () => {} });
-  assert.equal(result.errorCode, 'INSTALL'); assert.ok(installArgs.includes('--copy'));
+    acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'before', createBackup: async () => ({ backupPath: path.join(root, 'backup'), manifest: {}, originalTree: [], originalLockBytes: null }),
+    runSkillsAdd: async (_command, args) => { installReached = true; installArgs = args; throw Object.assign(new Error('stop after capture'), { code: 'INSTALL' }); }, restoreBackup: async () => {}, verifyInstalled: async () => {} });
+  assert.equal(result.errorCode, 'INSTALL'); assert.equal(installReached, true); assert.ok(installArgs.includes('--copy'));
 });
 
 test('latest verified installation short-circuits without CLI, npm, lock, or backup', async () => {
@@ -278,13 +304,16 @@ test('latest verified installation short-circuits without CLI, npm, lock, or bac
   assert.equal(result.status, 'up_to_date'); assert.equal(touched || probed || acquired, false);
 });
 
-test('rollback failure is surfaced and backup path retained', async () => {
-  const result = await runUpdate({ probeSkillsCli: async () => {}, flags: { dryRun: false, json: false, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
-    resolveInstallation: async () => ({ agentsHome: '/tmp/.agents', lockPath: '/tmp/.agents/.skill-lock.json', lock: { skills: { ake: { ref: sha } } }, agentPaths: [] }),
+test('rollback failure is surfaced and backup path retained', async t => {
+  const { home, agentsHome, lockPath, tempRoot, root } = await updateRoots(t, 'ake-update-rollback-');
+  let installReached = false, rollbackReached = false;
+  const result = await runUpdate({ home, tempRoot, probeSkillsCli: async () => {}, flags: { dryRun: false, json: false, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    resolveInstallation: async () => ({ agentsHome, lockPath, lock: { skills: { ake: { ref: sha } } }, agentPaths: [] }),
     resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'b'.repeat(40), entries: [] }),
-    acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'baseline', createBackup: async () => ({ backupPath: '/tmp/keep-backup', manifest: {}, originalTree: [], originalLockBytes: null }),
-    runSkillsAdd: async () => { throw new Error('install broke'); }, restoreBackup: async () => { throw new Error('restore broken'); } });
-  assert.equal(result.errorCode, 'ROLLBACK_FAILED'); assert.equal(result.backupPath, '/tmp/keep-backup'); assert.equal(result.rollback, 'failed');
+    acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'baseline', createBackup: async () => ({ backupPath: path.join(root, 'keep-backup'), manifest: {}, originalTree: [], originalLockBytes: null }),
+    runSkillsAdd: async () => { installReached = true; throw new Error('install broke'); }, restoreBackup: async () => { rollbackReached = true; throw new Error('restore broken'); } });
+  assert.equal(result.errorCode, 'ROLLBACK_FAILED'); assert.equal(result.backupPath, path.join(root, 'keep-backup')); assert.equal(result.rollback, 'failed');
+  assert.equal(installReached, true); assert.equal(rollbackReached, true);
 });
 
 test('pinned acquisition uses an isolated npm prefix and disables lifecycle scripts', async t => {
@@ -292,13 +321,20 @@ test('pinned acquisition uses an isolated npm prefix and disables lifecycle scri
   const workspace = path.join(root, 'workspace'), bin = path.join(root, 'bin'), capture = path.join(root, 'npm-capture.json');
   await mkdir(workspace); await mkdir(bin);
   const npm = path.join(bin, 'npm');
-  await writeFile(npm, `#!/usr/bin/env node\nconst fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2); fs.writeFileSync(process.env.AKE_CAPTURE, JSON.stringify({args,home:process.env.HOME,cache:process.env.npm_config_cache,userconfig:process.env.npm_config_userconfig,globalconfig:process.env.npm_config_globalconfig})); const prefix=args[args.indexOf('--prefix')+1], root=path.join(prefix,'node_modules','skills'); fs.mkdirSync(path.join(root,'bin'),{recursive:true}); fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'skills',version:'1.8.1',bin:{skills:'bin/cli.mjs'}})); fs.writeFileSync(path.join(root,'bin','cli.mjs'),\"if(process.argv[2]==='--version') console.log('skills 1.8.1');\");\n`);
-  await chmod(npm, 0o755);
+  const npmScript = `const fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2); fs.writeFileSync(process.env.AKE_CAPTURE, JSON.stringify({args,home:process.env.HOME,cache:process.env.npm_config_cache,userconfig:process.env.npm_config_userconfig,globalconfig:process.env.npm_config_globalconfig})); const prefix=args[args.indexOf('--prefix')+1], root=path.join(prefix,'node_modules','skills'); fs.mkdirSync(path.join(root,'bin'),{recursive:true}); fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'skills',version:'1.8.1',bin:{skills:'bin/cli.mjs'}})); fs.writeFileSync(path.join(root,'bin','cli.mjs'),\"if(process.argv[2]==='--version') console.log('skills 1.8.1');\");\n`;
+  await writeFile(npm, `#!/usr/bin/env node\n${npmScript}`); await chmod(npm, 0o755);
+  // resolveWindowsCli intentionally requires both npm.cmd and verifiable adjacent npm package metadata.
+  const npmPackage = path.join(bin, 'node_modules', 'npm');
+  await mkdir(path.join(npmPackage, 'bin'), { recursive: true });
+  await writeFile(path.join(bin, 'npm.cmd'), '@echo off\r\n');
+  await writeFile(path.join(npmPackage, 'package.json'), JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
+  await writeFile(path.join(npmPackage, 'bin', 'npm-cli.js'), npmScript);
   const { acquirePinnedSkillsCli } = await import('../../src/lib/update.mjs');
   const userCache = path.join(root, 'user-cache');
   const acquired = await acquirePinnedSkillsCli({ npmDirectory: workspace, baseEnvironment: cleanTestEnv({ PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}`, HOME: path.join(root, 'user-home'), NPM_CONFIG_CACHE: userCache, AKE_CAPTURE: capture }) });
   const captured = JSON.parse(await readFile(capture, 'utf8'));
   assert.equal(captured.args[0], 'install'); assert.ok(captured.args.includes('--ignore-scripts')); assert.ok(captured.args.includes('skills@1.8.1'));
+  assert.ok(captured.args.includes('--registry=https://registry.npmjs.org'));
   assert.equal(captured.home, path.join(workspace, 'home')); assert.equal(captured.cache, path.join(workspace, 'cache')); assert.equal(captured.userconfig, path.join(workspace, 'npmrc-user')); assert.equal(captured.globalconfig, path.join(workspace, 'npmrc-global')); await assert.rejects(lstat(userCache), { code: 'ENOENT' });
   assert.equal(acquired.version, '1.8.1'); assert.equal(acquired.command, process.execPath); assert.equal(path.basename(acquired.prefix[0]), 'cli.mjs');
 });

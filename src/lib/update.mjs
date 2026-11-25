@@ -133,7 +133,19 @@ export async function resolveInstallation({ home = os.homedir(), env = process.e
   return { ...installation, canonicalPath: canonicalInfo, loadPath: canonical, scope: 'user', mode: 'canonical', agentPaths, agentsHome, lockPath, lock, lockBytes, sourceInfo, sourceKnown, sourceDeclarationMissing, initiatedBy: checkoutBootstrap ? 'checkout' : 'installed-bundle', bootstrap: Boolean(checkoutBootstrap), scopeBefore: checkoutBootstrap ? 'development' : installation.scope, checkout: checkoutBootstrap };
 }
 
-async function compareLocalSource(installation, gitRunner) {
+function comparableTree(entries, platform) {
+  return entries.map(item => {
+    let mode = item.mode;
+    if (item.type === 'symlink') mode = null;
+    else if (platform === 'win32') {
+      // Git tracks only the executable bit for regular files; Windows exposes writable/read-only, not POSIX execute bits.
+      mode = item.type === 'file' ? ((item.mode & 0o222) ? 'writable' : 'read-only') : null;
+    }
+    return [item.relativePath, item.type, mode, item.sha256, item.linkTarget];
+  }).sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+async function compareLocalSource(installation, gitRunner, platform) {
   const source = installation.lock?.skills?.ake?.source;
   if (typeof source !== 'string' || !path.isAbsolute(source)) return { status: 'unknown', baseline: null };
   try {
@@ -152,16 +164,15 @@ async function compareLocalSource(installation, gitRunner) {
     const { stdout } = await gitRunner(['-C', sourceRoot, 'status', '--porcelain', '--', 'skills/ake']);
     if (stdout.trim()) return { status: 'unknown', baseline: null };
     const sourceTree = await snapshotTree(sourceSkill), installedTree = await snapshotTree(installation.canonicalPath);
-    const comparable = entries => entries.map(item => [item.relativePath, item.type, item.mode, item.sha256, item.linkTarget]).sort((a, b) => a[0].localeCompare(b[0]));
-    return { status: JSON.stringify(comparable(sourceTree)) === JSON.stringify(comparable(installedTree)) ? 'clean' : 'modified', baseline: `local-source:${sourceRoot}` };
+    return { status: JSON.stringify(comparableTree(sourceTree, platform)) === JSON.stringify(comparableTree(installedTree, platform)) ? 'clean' : 'modified', baseline: `local-source:${sourceRoot}` };
   } catch { return { status: 'unknown', baseline: null }; }
 }
 
-export async function detectCustomization(installation, remote, { gitRunner = runGit, tempDirectory = os.tmpdir(), report: details } = {}) {
+export async function detectCustomization(installation, remote, { gitRunner = runGit, tempDirectory = os.tmpdir(), report: details, platform = process.platform } = {}) {
   const lockItem = installation.lock?.skills?.ake;
   const ref = lockItem?.ref;
   if (lockItem?.sourceType === 'local' && !ref) {
-    const baseline = await compareLocalSource(installation, gitRunner);
+    const baseline = await compareLocalSource(installation, gitRunner, platform);
     if (details && baseline.baseline) details.baseline = baseline.baseline;
     return baseline.status;
   }
@@ -173,8 +184,7 @@ export async function detectCustomization(installation, remote, { gitRunner = ru
     await gitRunner(['--git-dir', bare, 'fetch', '--no-tags', installation.sourceInfo.sourceUrl, ref]);
     const oldEntries = await snapshotGitTree(bare, ref, gitRunner);
     const localEntries = await snapshotTree(installation.canonicalPath);
-    const comparable = entries => entries.map(item => [item.relativePath, item.type, item.mode, item.sha256, item.linkTarget]).sort((a, b) => a[0].localeCompare(b[0]));
-    return JSON.stringify(comparable(oldEntries)) === JSON.stringify(comparable(localEntries)) ? 'clean' : 'modified';
+    return JSON.stringify(comparableTree(oldEntries, platform)) === JSON.stringify(comparableTree(localEntries, platform)) ? 'clean' : 'modified';
   } catch { return 'unknown'; }
   finally { await import('node:fs/promises').then(fs => fs.rm(directory, { recursive: true, force: true })); }
 }
@@ -281,7 +291,7 @@ async function snapshotInstallEffects(installation) {
   return JSON.stringify(stable({ nonAke, listings, paths, protectedSkills }));
 }
 
-export async function verifyInstalled(installation, remote) {
+export async function verifyInstalled(installation, remote, { platform = process.platform } = {}) {
   const expected = new Map();
   for (const entry of remote.entries ?? []) {
     expected.set(entry.relativePath, entry);
@@ -297,7 +307,13 @@ export async function verifyInstalled(installation, remote) {
     const mode = Number.parseInt(wanted.mode, 8) & 0o777;
     if (wanted.type === 'blob' && wanted.mode === '120000') {
       if (item.type !== 'symlink' || item.linkTarget !== Buffer.from(wanted.bytes).toString()) throw new Error(`target symlink mismatch: ${item.relativePath}`);
-    } else if (item.type !== 'file' || item.sha256 !== sha256(wanted.bytes) || (item.mode & 0o111) !== (mode & 0o111)) throw new Error(`target file mismatch: ${item.relativePath}`);
+    } else {
+      // Windows filesystems expose read-only state, not Git's executable bit; compare the former and preserve raw-byte checks.
+      const modeMismatch = platform === 'win32'
+        ? Boolean(item.mode & 0o222) !== Boolean(mode & 0o222)
+        : (item.mode & 0o111) !== (mode & 0o111);
+      if (item.type !== 'file' || item.sha256 !== sha256(wanted.bytes) || modeMismatch) throw new Error(`target file mismatch: ${item.relativePath}`);
+    }
   }
   const lockInfo = await lstat(installation.lockPath);
   if (!lockInfo.isFile() || lockInfo.isSymbolicLink()) throw new Error('installed Skills lock is not a regular file');
@@ -463,7 +479,7 @@ export async function runUpdate(options = {}) {
     const existingRef = output.oldCommit;
     if (installation.lock?.skills?.ake?.sourceType === 'github' && existingRef === remote.targetCommit) {
       let check = false;
-      try { check = options.isCurrent ? await options.isCurrent(installation, remote) : (await verifyInstalled(installation, remote), true); } catch { check = false; }
+      try { check = options.isCurrent ? await options.isCurrent(installation, remote) : (await verifyInstalled(installation, remote, { platform }), true); } catch { check = false; }
       if (check === true) { report('up_to_date', 'complete', null, 'AKE is already up to date'); return output; }
     }
     if (flags.dryRun) { report('dry_run', 'plan', null, `Would update from ${existingRef ?? 'unknown/local'} to ${remote.targetCommit}; no installation changes made`); return output; }
@@ -475,7 +491,7 @@ export async function runUpdate(options = {}) {
       throw Object.assign(new Error('copy-mode Skills lock conflicts with an existing agent symlink; refusing because Skills CLI --copy may replace that symlink with an unbacked copy'), { code: 'IDENTITY_AMBIGUOUS' });
     }
     const customizationDetails = {};
-    const customization = await (options.detectCustomization ?? detectCustomization)(installation, remote, { gitRunner: options.gitRunner, report: customizationDetails });
+    const customization = await (options.detectCustomization ?? detectCustomization)(installation, remote, { gitRunner: options.gitRunner, report: customizationDetails, platform });
     output.customization = customization; output.baseline = customizationDetails.baseline ?? null;
     // Explicit customized-source opt-in is a deliberate Lead 裁决 2026-11-14; never infer it from dry-run or status.
     if (customization !== 'clean' && !flags.acceptCustomized) throw Object.assign(new Error(`local installation is ${customization}; back it up and rerun only after explicit approval with --accept-customized`), { code: 'CUSTOMIZED_CONFIRMATION_REQUIRED' });
@@ -519,7 +535,7 @@ export async function runUpdate(options = {}) {
     try {
       const effectsAfter = await (options.snapshotInstallEffects ?? snapshotInstallEffects)(installation);
       if (effectsBefore !== effectsAfter) throw new Error('Skills CLI changed non-AKE lock entries, agent directory entries, or canonical/link identity');
-      await (options.verifyInstalled ?? verifyInstalled)(installation, remote);
+      await (options.verifyInstalled ?? verifyInstalled)(installation, remote, { platform });
     } catch (error) { throw Object.assign(error, { code: error.code ?? 'VERIFY' }); }
     const installationAfter = await (options.readAfter ?? (async () => await resolveInstallation({ ...installationOptions, allowCompletedBootstrap: Boolean(installation.bootstrap) })))();
     output.installationAfter = publicInstallation(installationAfter);
