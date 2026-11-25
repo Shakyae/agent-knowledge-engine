@@ -305,7 +305,11 @@ export async function verifyInstalled(installation, remote) {
   const lock = JSON.parse(lockBytes.toString('utf8'));
   const item = lock.skills?.ake;
   if (item?.ref?.toLowerCase() !== remote.targetCommit || item?.skillPath !== 'skills/ake/SKILL.md' || item?.sourceType !== 'github' || item?.source !== remote.repo || item?.sourceUrl?.replace(/\/$/, '') !== remote.sourceUrl.replace(/\/$/, '')) throw new Error('installed Skills lock does not identify the exact target');
-  for (const relative of ['SKILL.md', 'bootstrap.mjs', 'resources/ake-source/package.json', 'resources/ake-source/scripts/ake.mjs']) await readFile(path.join(installation.canonicalPath, relative));
+  const skillText = await readFile(path.join(installation.canonicalPath, 'SKILL.md'), 'utf8');
+  const required = ['bootstrap.mjs', 'resources/ake-source/package.json', 'resources/ake-source/scripts/ake.mjs'];
+  // Literal marker heuristic only; this is not semantic validation or authentication.
+  for (const helper of ['preflight.mjs', 'init-git.mjs']) if (skillText.includes(helper)) required.push(helper);
+  for (const relative of required) await readFile(path.join(installation.canonicalPath, relative));
 }
 
 function isWithinDirectory(parent, target, platform = process.platform) {

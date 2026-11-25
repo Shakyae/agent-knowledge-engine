@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, cp, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -15,7 +16,7 @@ async function fixture(t) {
   const installedSkill = path.join(root, 'installed-skills', 'ake');
   await mkdir(path.dirname(installedSkill), { recursive: true });
   await cp(skillSource, installedSkill, { recursive: true });
-  return { root, installedSkill, bootstrap: path.join(installedSkill, 'bootstrap.mjs') };
+  return { root, installedSkill, bootstrap: path.join(installedSkill, 'bootstrap.mjs'), preflight: path.join(installedSkill, 'preflight.mjs') };
 }
 
 function gitInit(directory) {
@@ -96,14 +97,32 @@ test('non-Git targets are refused with zero writes', async (t) => {
   const { root, bootstrap } = await fixture(t);
   const nonGit = path.join(root, 'not git');
   await mkdir(nonGit);
+  const dryRun = run(bootstrap, nonGit, root, '--dry-run');
+  assert.equal(dryRun.status, 1);
+  assert.match(dryRun.stderr, /^NOT_GIT_WORKTREE:/);
+  assert.deepEqual(await readdir(nonGit), [], 'dry-run must not invoke git init');
   const absent = run(bootstrap, nonGit, root);
   assert.equal(absent.status, 1);
-  assert.match(absent.stderr, /Ask the user/);
-  assert.deepEqual(await readdir(nonGit), []);
+  assert.match(absent.stderr, /^NOT_GIT_WORKTREE:/);
+  assert.deepEqual(await readdir(nonGit), [], 'bootstrap apply must not implicitly invoke git init');
+});
+
+test('damaged .git metadata is not classified as an initializable non-repository', async t => {
+  const { root, bootstrap } = await fixture(t);
+  const target = path.join(root, 'damaged git');
+  await mkdir(path.join(target, '.git'), { recursive: true });
+  await writeFile(path.join(target, '.git', 'partial-marker'), 'preserve');
+  const before = (await readdir(path.join(target, '.git'))).sort();
+  const result = run(bootstrap, target, root, '--dry-run');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^GIT_METADATA_INVALID:/);
+  assert.doesNotMatch(result.stderr, /NOT_GIT_WORKTREE/);
+  assert.deepEqual((await readdir(path.join(target, '.git'))).sort(), before);
+  assert.deepEqual((await readdir(target)).sort(), ['.git']);
 });
 
 test('copied Skill CLI writes only to a bootstrapped AKE subproject in a parent work tree', async (t) => {
-  const { root, bootstrap } = await fixture(t);
+  const { root, bootstrap, preflight } = await fixture(t);
   const parent = path.join(root, 'parent repo');
   const target = path.join(parent, 'project subdir');
   const work = path.join(target, 'nested work');
@@ -129,10 +148,24 @@ test('copied Skill CLI writes only to a bootstrapped AKE subproject in a parent 
   const status = spawnSync(process.execPath, [copiedCli, 'status', '--json'], { cwd: work, encoding: 'utf8' });
   assert.equal(status.status, 0, status.stderr);
   assert.equal(JSON.parse(status.stdout).project, target);
-  await writeFile(path.join(target, 'docs/cookbook/child-sentinel.md'), '# Child sentinel\n\nchild-only-needle\n');
-  const childSearch = spawnSync(process.execPath, [copiedCli, 'search', 'child-only-needle'], { cwd: work, encoding: 'utf8' });
+  await writeFile(path.join(target, 'docs/cookbook/child-sentinel.md'), '# Child sentinel one\n\nchild-only-needle\n');
+  await writeFile(path.join(target, 'docs/cookbook/child-sentinel-2.md'), '# Child sentinel two\n\nchild-only-needle\n');
+  const taskEnv = { ...process.env, AKE_PREFLIGHT_CONTEXT: 'unchanged-context' };
+  const preflightStatus = runPreflight(preflight, target, taskEnv);
+  assert.equal(preflightStatus.status, 0, preflightStatus.stderr);
+  assert.match(preflightStatus.stdout, /PROJECT_OK/);
+  assert.doesNotMatch(preflightStatus.stdout, /installation version/);
+  const childSearch = runProjectCli(target, ['search', 'child-only-needle', '--limit', '1', '--type', 'cookbook', '--include-candidates', '--json'], taskEnv);
   assert.equal(childSearch.status, 0, childSearch.stderr);
-  assert.match(childSearch.stdout, /child-sentinel\.md/);
+  const searchResult = JSON.parse(childSearch.stdout);
+  assert.equal(searchResult.query.raw, 'child-only-needle');
+  assert.equal(searchResult.coverage, 'incomplete');
+  assert.ok(searchResult.coverageReasons.some((reason) => reason.includes('results truncated by limit 1')));
+  assert.equal(searchResult.truncated, true);
+  assert.ok(searchResult.searchedRoots.includes('.ake/candidates'));
+  assert.equal(searchResult.results.length, 1);
+  assert.ok(searchResult.results.every((result) => result.type === 'cookbook'));
+  assert.ok(searchResult.results[0].path.startsWith('docs/cookbook/child-sentinel'));
   assert.doesNotMatch(childSearch.stdout, /parent-sentinel\.md/);
   const parentSearch = spawnSync(process.execPath, [copiedCli, 'search', 'parent-only-needle', '--project', parent], { cwd: work, encoding: 'utf8' });
   assert.equal(parentSearch.status, 0, parentSearch.stderr);
@@ -215,7 +248,7 @@ test('Git selection environment cannot make a non-Git target appear initialized'
 
   const result = spawnSync(process.execPath, [bootstrap, '--dir', target], { cwd: root, env: polluted, encoding: 'utf8' });
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Ask the user/);
+  assert.match(result.stderr, /^NOT_GIT_WORKTREE:/);
   assert.deepEqual(await readdir(target), []);
 
   const cli = spawnSync(process.execPath, [path.join(repoRoot, 'scripts/ake.mjs'), 'init', '--dir', target], { cwd: root, env: polluted, encoding: 'utf8' });
@@ -251,6 +284,82 @@ test('existing project config and CLI are preserved without upgrade', async (t) 
   assert.deepEqual((await readdir(target)).sort(), ['.ake', '.git']);
 });
 
+test('bootstrap refuses non-file project entries and ENOTDIR before applying init', async (t) => {
+  const { root, bootstrap } = await fixture(t);
+  const nonFile = path.join(root, 'non-file project');
+  await mkdir(path.join(nonFile, '.ake/config.json'), { recursive: true });
+  gitInit(nonFile);
+  const nonFileResult = run(bootstrap, nonFile, root);
+  assert.equal(nonFileResult.status, 1);
+  assert.match(nonFileResult.stderr, /^EXISTING_PATH_INVALID:/);
+  assert.deepEqual((await readdir(nonFile)).sort(), ['.ake', '.git']);
+
+  const blockedAncestor = path.join(root, 'not-directory project');
+  await mkdir(path.join(blockedAncestor, '.ake'), { recursive: true });
+  await writeFile(path.join(blockedAncestor, '.ake/tools'), 'not a directory');
+  gitInit(blockedAncestor);
+  const notDirectoryResult = run(bootstrap, blockedAncestor, root);
+  assert.equal(notDirectoryResult.status, 1);
+  assert.match(notDirectoryResult.stderr, /^EXISTING_PATH_INVALID:/);
+  assert.equal(await readFile(path.join(blockedAncestor, '.ake/tools'), 'utf8'), 'not a directory');
+});
+
+test('bootstrap refuses a symlinked project config', async (t) => {
+  const { root, bootstrap } = await fixture(t);
+  const target = path.join(root, 'symlink config project');
+  await mkdir(path.join(target, '.ake'), { recursive: true });
+  gitInit(target);
+  const external = path.join(root, 'external-config.json');
+  await writeFile(external, '{"version":"0.1.0"}\n');
+  try { await symlink(external, path.join(target, '.ake/config.json')); }
+  catch (error) {
+    if (['EPERM', 'EACCES', 'ENOSYS'].includes(error.code)) return t.skip(`file symlink unavailable: ${error.code}`);
+    throw error;
+  }
+  const result = run(bootstrap, target, root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^EXISTING_PATH_INVALID:/);
+  assert.equal(await readFile(external, 'utf8'), '{"version":"0.1.0"}\n');
+  assert.deepEqual((await readdir(target)).sort(), ['.ake', '.git']);
+});
+
+test('bootstrap refuses a partial existing project without initializing over it', async (t) => {
+  const { root, bootstrap } = await fixture(t);
+  const target = path.join(root, 'partial project');
+  await mkdir(path.join(target, '.ake'), { recursive: true });
+  await writeFile(path.join(target, '.ake/config.json'), '{"version":"0.1.0"}\n');
+  gitInit(target);
+  const before = await readFile(path.join(target, '.ake/config.json'));
+  const result = run(bootstrap, target, root);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^PARTIAL_INITIALIZATION:/);
+  assert.deepEqual(await readFile(path.join(target, '.ake/config.json')), before);
+  assert.deepEqual((await readdir(target)).sort(), ['.ake', '.git']);
+});
+
+test('bootstrap reports permission-denied inspection instead of treating it as absent', async (t) => {
+  if (process.platform === 'win32') return t.skip('chmod mode bits do not model Windows ACL denial');
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return t.skip('root can inspect mode-000 directories; permission-denied branch unavailable');
+  const { root, bootstrap } = await fixture(t);
+  const target = path.join(root, 'permission project');
+  const akeDir = path.join(target, '.ake');
+  await mkdir(akeDir, { recursive: true });
+  gitInit(target);
+  await chmod(akeDir, 0o000);
+  let denied = false;
+  try { await access(akeDir, constants.R_OK | constants.X_OK); }
+  catch (error) { if (error.code === 'EACCES') denied = true; else throw error; }
+  if (!denied) {
+    await chmod(akeDir, 0o700);
+    return t.skip('current filesystem/ACL still permits access after chmod 000');
+  }
+  const result = run(bootstrap, target, root);
+  await chmod(akeDir, 0o700);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^EXISTING_PATH_UNAVAILABLE:/);
+  assert.deepEqual((await readdir(target)).sort(), ['.ake', '.git']);
+});
+
 test('incomplete Skill resources report exact missing files without writes', async (t) => {
   const { root, installedSkill, bootstrap } = await fixture(t);
   const missing = path.join(installedSkill, 'resources/ake-source/src/lib/search.mjs');
@@ -264,6 +373,319 @@ test('incomplete Skill resources report exact missing files without writes', asy
   assert.match(result.stderr, new RegExp(missing.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(result.stderr, /README installation instructions/);
   assert.deepEqual((await readdir(target)).sort(), ['.git']);
+});
+
+async function preflightProject(root, source) {
+  const target = path.join(root, 'preflight project');
+  const cli = path.join(target, '.ake/tools/scripts/ake.mjs');
+  await mkdir(path.dirname(cli), { recursive: true });
+  await writeFile(path.join(target, '.ake/config.json'), '{}\n');
+  await writeFile(cli, source);
+  return target;
+}
+
+function runPreflight(preflight, target, env = process.env) {
+  return spawnSync(process.execPath, [preflight, '--dir', target], { cwd: os.tmpdir(), env, encoding: 'utf8' });
+}
+
+async function sentinelGit(root) {
+  const bin = path.join(root, 'sentinel-git-bin');
+  const sentinel = path.join(root, 'git-inspector-called');
+  await mkdir(bin);
+  const fakeGit = path.join(bin, 'git');
+  await writeFile(fakeGit, `#!/bin/sh\nprintf x >> "$SENTINEL_FILE"\nif [ "$1" = "--version" ]; then echo "git version sentinel"; exit 0; fi\nif [ "$1" = "-C" ]; then shift 2; if [ "$1" = "rev-parse" ]; then echo "fatal: not a git repository" >&2; exit 128; fi; fi\nexit 91\n`);
+  await chmod(fakeGit, 0o755);
+  return { sentinel, env: { ...process.env, PATH: bin, SENTINEL_FILE: sentinel } };
+}
+
+function runProjectCli(target, args, env = process.env) {
+  return spawnSync(process.execPath, [path.join(target, '.ake/tools/scripts/ake.mjs'), ...args], { cwd: target, env, encoding: 'utf8' });
+}
+
+test('Skill preflight checks status once in the canonical target cwd and inherited environment', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const log = path.join(root, 'invocation.json');
+  const source = `const {writeFile,mkdir}=await import('node:fs/promises'); await mkdir('nested'); await writeFile(process.env.PREFLIGHT_LOG, JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2),context:process.env.PREFLIGHT_CONTEXT})); console.log(JSON.stringify({project:process.cwd()+'/nested/..'}));`;
+  const target = await preflightProject(root, source);
+  const env = { ...process.env, PREFLIGHT_LOG: log, PREFLIGHT_CONTEXT: 'same-context' };
+  const result = runPreflight(preflight, target, env);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /PROJECT_OK/);
+  assert.deepEqual(JSON.parse(await readFile(log, 'utf8')), { cwd: await realpath(target), args: ['status', '--json'], context: 'same-context' });
+});
+
+test('Skill preflight rejects an existing CLI that reports a parent project', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const target = await preflightProject(root, `console.log(JSON.stringify({project:${JSON.stringify(root)}}));\n`);
+  const result = runPreflight(preflight, target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^PROJECT_MISMATCH:/);
+  assert.match(result.stderr, /stop before any write/);
+});
+
+test('Skill preflight rejects a relative project value', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const target = await preflightProject(root, `console.log(JSON.stringify({project:'.'}));`);
+  const result = runPreflight(preflight, target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^PROJECT_PATH_RELATIVE:/);
+});
+
+test('Skill preflight rejects an unresolvable absolute project path', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const target = await preflightProject(root, `console.log(JSON.stringify({project:${JSON.stringify(path.join(root, 'missing project'))}}));`);
+  const result = runPreflight(preflight, target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^PROJECT_PATH_UNRESOLVABLE:/);
+});
+
+test('Skill preflight accepts legacy help differences; the actual unsupported task reports its error', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const target = await preflightProject(root, `if(process.argv[2]==='status') console.log(JSON.stringify({project:process.cwd()})); else if(process.argv[2]==='--help') console.log('Legacy AKE commands: status, init, validate'); else { console.error('unknown command: search'); process.exitCode=2; }`);
+  const preflightResult = runPreflight(preflight, target);
+  assert.equal(preflightResult.status, 0, preflightResult.stderr);
+  const help = runProjectCli(target, ['--help']);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /Legacy AKE commands/);
+  const actualTask = runProjectCli(target, ['search', 'query', '--json']);
+  assert.equal(actualTask.status, 2);
+  assert.match(actualTask.stderr, /unknown command: search/);
+});
+
+test('Skill preflight canonicalizes a real symlink target', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const target = await preflightProject(root, `console.log(JSON.stringify({project:process.cwd()}));`);
+  const alias = path.join(root, 'target alias');
+  try { await symlink(target, alias, 'dir'); }
+  catch (error) {
+    if (['EPERM', 'EACCES', 'ENOSYS'].includes(error.code)) return t.skip(`directory symlink unavailable: ${error.code}`);
+    throw error;
+  }
+  const result = runPreflight(preflight, alias);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stdout.includes(`PROJECT_OK: existing CLI status --json resolved to the requested project ${await realpath(target)}`));
+});
+
+test('Skill preflight rejects a sibling path sharing the target prefix', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const target = await preflightProject(root, '');
+  const sibling = `${target}-other`;
+  await mkdir(sibling);
+  await writeFile(path.join(target, '.ake/tools/scripts/ake.mjs'), `console.log(JSON.stringify({project:${JSON.stringify(sibling)}}));\n`);
+  const result = runPreflight(preflight, target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^PROJECT_MISMATCH:/);
+});
+
+test('Skill preflight classifies unsupported status, malformed JSON, and missing project identity', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const cases = [
+    [`console.error('unknown command: status'); process.exitCode=2;\n`, 'STATUS_FAILED'],
+    [`console.log('{not-json');\n`, 'STATUS_INVALID_JSON'],
+    [`console.log(JSON.stringify({version:'0.1.0'}));\n`, 'PROJECT_FIELD_MISSING'],
+  ];
+  for (const [source, code] of cases) {
+    const target = await preflightProject(root, source);
+    const result = runPreflight(preflight, target);
+    assert.equal(result.status, 1, result.stderr);
+    assert.ok(result.stderr.startsWith(`${code}:`), result.stderr);
+  }
+});
+
+test('legacy CLI no-Git diagnostic requires independent trusted Git confirmation', async t => {
+  const { root, preflight } = await fixture(t);
+  const legacyCli = `const {spawnSync}=await import('node:child_process');const r=spawnSync('git',['-C',process.cwd(),'rev-parse','--is-inside-work-tree'],{encoding:'utf8'});if(r.error||r.status!==0||r.stdout.trim()!=='true'){console.error('not a AKE project: no .git repository found');process.exitCode=1}else console.log(JSON.stringify({project:process.cwd()}));`;
+  const target = await preflightProject(root, legacyCli);
+  const result = runPreflight(preflight, target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^NOT_GIT_WORKTREE:/);
+  assert.match(result.stderr, /independent Git inspection confirmed no repository/);
+});
+
+test('current and legacy structured no-Git diagnostics recover only after independent inspect', async t => {
+  const { root, preflight } = await fixture(t);
+  const messages = [
+    'NOT_GIT_WORKTREE: not a AKE project: no .git repository found',
+    'not a AKE project: no .git repository found',
+  ];
+  for (const message of messages) {
+    const source = `console.log(JSON.stringify({ok:false,error:${JSON.stringify(message)},errors:1,warnings:0}));process.exitCode=1;`;
+    const target = await preflightProject(root, source);
+    const result = runPreflight(preflight, target);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^NOT_GIT_WORKTREE:/);
+    assert.match(result.stderr, /independent Git inspection confirmed no repository/);
+  }
+});
+
+test('arbitrary status error-code token injection never triggers or invokes Git inspection', async t => {
+  if (process.platform === 'win32') return t.skip('POSIX fake-Git sentinel unavailable');
+  const { root, preflight } = await fixture(t);
+  const { sentinel, env } = await sentinelGit(root);
+  const source = `console.error('permission denied; NOT_GIT_WORKTREE: not a AKE project: no .git repository found');process.exitCode=1;`;
+  const target = await preflightProject(root, source);
+  const result = runPreflight(preflight, target, env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^STATUS_FAILED:/);
+  assert.match(result.stderr, /independent Git inspection was not run/);
+  assert.doesNotMatch(result.stderr, /^NOT_GIT_WORKTREE:/);
+  await assert.rejects(access(sentinel), { code: 'ENOENT' }, 'untrusted token must not start the inspector or Git binary');
+});
+
+test('mixed stdout/stderr diagnostics fail closed without launching Git inspection', async t => {
+  if (process.platform === 'win32') return t.skip('POSIX fake-Git sentinel unavailable');
+  const { root, preflight } = await fixture(t);
+  const { sentinel, env } = await sentinelGit(root);
+  const current = 'NOT_GIT_WORKTREE: not a AKE project: no .git repository found';
+  const cases = [
+    `console.error('not a AKE project: no .git repository found');console.log('permission denied reading status');process.exitCode=1;`,
+    `console.error('permission denied reading status');console.log(JSON.stringify({ok:false,error:${JSON.stringify(current)},errors:1,warnings:0}));process.exitCode=1;`,
+  ];
+  for (const source of cases) {
+    await rm(sentinel, { force: true });
+    const target = await preflightProject(root, source);
+    const result = runPreflight(preflight, target, env);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /^STATUS_FAILED:/);
+    assert.match(result.stderr, /independent Git inspection was not run/);
+    await assert.rejects(access(sentinel), { code: 'ENOENT' }, 'mixed channels must not invoke the inspector');
+  }
+});
+
+test('only expected status exit and exact no-Git text may launch the Git inspector', async t => {
+  if (process.platform === 'win32') return t.skip('POSIX fake-Git sentinel unavailable');
+  const { root, preflight } = await fixture(t);
+  const { sentinel, env } = await sentinelGit(root);
+  const target = await preflightProject(root, `console.error('not a AKE project: no .git repository found');process.exitCode=1;`);
+  const result = runPreflight(preflight, target, env);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^NOT_GIT_WORKTREE:/);
+  assert.ok((await readFile(sentinel, 'utf8')).length > 0, 'inspector must call the fake Git executable after exact status failure');
+});
+
+test('signal and unexpected status exit codes stop before invoking any inspector', async t => {
+  if (process.platform === 'win32') return t.skip('POSIX signals and fake-Git sentinel unavailable');
+  const { root, preflight } = await fixture(t);
+  const { sentinel, env } = await sentinelGit(root);
+  const legacy = 'not a AKE project: no .git repository found';
+  const cases = [
+    [`console.error(${JSON.stringify(legacy)});process.exitCode=2;`, /exit code 2/],
+    [`const {writeSync}=await import('node:fs');writeSync(2,${JSON.stringify(`${legacy}\n`)});process.kill(process.pid,'SIGTERM');`, /signal SIGTERM/],
+  ];
+  for (const [source, expected] of cases) {
+    await rm(sentinel, { force: true });
+    const target = await preflightProject(root, source);
+    const result = runPreflight(preflight, target, env);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /^STATUS_FAILED:/);
+    assert.match(result.stderr, expected);
+    await assert.rejects(access(sentinel), { code: 'ENOENT' }, 'signal/non-1 exit must not launch Git inspection');
+  }
+});
+
+test('status CLI read denial stops without invoking any inspector', async t => {
+  if (process.platform === 'win32') return t.skip('chmod mode bits do not model Windows ACL denial');
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return t.skip('root can read mode-000 status CLI');
+  const { root, preflight } = await fixture(t);
+  const { sentinel, env } = await sentinelGit(root);
+  const source = `console.error('not a AKE project: no .git repository found');process.exitCode=1;`;
+  const target = await preflightProject(root, source);
+  const cli = path.join(target, '.ake/tools/scripts/ake.mjs');
+  await chmod(cli, 0o000);
+  let result;
+  try { result = runPreflight(preflight, target, env); }
+  finally { await chmod(cli, 0o644); }
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^STATUS_FAILED:/);
+  assert.doesNotMatch(result.stderr, /^NOT_GIT_WORKTREE:/);
+  await assert.rejects(access(sentinel), { code: 'ENOENT' }, 'permission-denied CLI must not launch Git inspection');
+});
+
+test('exact legacy no-Git text is vetoed when trusted inspection finds a real worktree', async t => {
+  const { root, preflight } = await fixture(t);
+  const target = await preflightProject(root, `console.error('not a AKE project: no .git repository found');process.exitCode=1;`);
+  gitInit(target);
+  const result = runPreflight(preflight, target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^STATUS_FAILED:/);
+  assert.match(result.stderr, /independent Git inspection found a valid already-worktree/i);
+});
+
+test('independent Git inspection refuses missing Git and damaged metadata', async t => {
+  const { root, preflight } = await fixture(t);
+  const legacy = `console.error('not a AKE project: no .git repository found');process.exitCode=1;`;
+  const noGitTarget = await preflightProject(root, legacy);
+  const emptyPath = path.join(root, 'empty PATH');
+  await mkdir(emptyPath);
+  const noGit = runPreflight(preflight, noGitTarget, { ...process.env, PATH: emptyPath });
+  assert.equal(noGit.status, 1);
+  assert.match(noGit.stderr, /^GIT_UNAVAILABLE:/);
+  assert.doesNotMatch(noGit.stderr, /^NOT_GIT_WORKTREE:/);
+
+  const damagedTarget = await preflightProject(root, legacy);
+  await mkdir(path.join(damagedTarget, '.git'));
+  await writeFile(path.join(damagedTarget, '.git', 'partial'), 'keep');
+  const damaged = runPreflight(preflight, damagedTarget);
+  assert.equal(damaged.status, 1);
+  assert.match(damaged.stderr, /^GIT_METADATA_INVALID:/);
+  assert.doesNotMatch(damaged.stderr, /^NOT_GIT_WORKTREE:/);
+});
+
+test('denied trusted-inspector execution cannot become a no-Git prompt', async t => {
+  if (process.platform === 'win32') return t.skip('chmod mode bits do not model Windows ACL denial');
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return t.skip('root can read mode-000 helper files');
+  const { root, installedSkill, preflight } = await fixture(t);
+  const target = await preflightProject(root, `console.error('not a AKE project: no .git repository found');process.exitCode=1;`);
+  const helper = path.join(installedSkill, 'init-git.mjs');
+  await chmod(helper, 0o000);
+  let result;
+  try { result = runPreflight(preflight, target); }
+  finally { await chmod(helper, 0o644); }
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^GIT_INSPECT_FAILED:/);
+  assert.doesNotMatch(result.stderr, /^NOT_GIT_WORKTREE:/);
+});
+
+test('permission denied inspecting Git metadata cannot become a no-Git prompt', async t => {
+  if (process.platform === 'win32') return t.skip('chmod mode bits do not model Windows ACL denial');
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return t.skip('root can inspect mode-000 Git metadata');
+  const { root, preflight } = await fixture(t);
+  const target = await preflightProject(root, `console.error('not a AKE project: no .git repository found');process.exitCode=1;`);
+  const gitMarker = path.join(target, '.git');
+  await mkdir(gitMarker);
+  await chmod(gitMarker, 0o000);
+  let result;
+  try { result = runPreflight(preflight, target); }
+  finally { await chmod(gitMarker, 0o700); }
+  assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /^NOT_GIT_WORKTREE:/);
+  assert.match(result.stderr, /GIT_METADATA_INVALID|GIT_PROBE_FAILED|GIT_INSPECT_FAILED/);
+});
+
+test('existing AKE files with deleted Git metadata are classified for recovery', async t => {
+  const { root, bootstrap, preflight } = await fixture(t);
+  const target = path.join(root, 'existing AKE without git');
+  await mkdir(target);
+  gitInit(target);
+  const initialized = run(bootstrap, target, root);
+  assert.equal(initialized.status, 0, initialized.stderr);
+  await rm(path.join(target, '.git'), { recursive: true, force: true });
+  const result = runPreflight(preflight, target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^NOT_GIT_WORKTREE:/);
+  assert.match(result.stderr, /existing AKE files remain untouched/);
+  await access(path.join(target, '.ake/config.json'));
+  await access(path.join(target, '.ake/tools/scripts/ake.mjs'));
+});
+
+test('Skill preflight rejects an uninitialized target before invoking its CLI', async (t) => {
+  const { root, preflight } = await fixture(t);
+  const target = path.join(root, 'uninitialized');
+  await mkdir(target);
+  const result = runPreflight(preflight, target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^NOT_INITIALIZED:/);
+  assert.match(result.stderr, /bootstrap preview/);
 });
 
 test('bundle generation consistency check passes against the committed Skill payload', () => {

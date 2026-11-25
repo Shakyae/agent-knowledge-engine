@@ -14,8 +14,10 @@ async function fixture(t, { lock, withLink = false } = {}) {
   const home = await temp(t), skill = path.join(home, '.agents', 'skills', 'ake'), bundle = path.join(skill, 'resources', 'ake-source');
   await mkdir(path.join(bundle, 'scripts'), { recursive: true });
   await mkdir(path.join(skill, 'resources'), { recursive: true });
-  await writeFile(path.join(skill, 'SKILL.md'), '# Skill');
+  await writeFile(path.join(skill, 'SKILL.md'), '# Skill\n\nRun `preflight.mjs --dir <target>` before using the project CLI. On native user selection, run `init-git.mjs --dir <canonical-target>`.');
   await writeFile(path.join(skill, 'bootstrap.mjs'), '');
+  await writeFile(path.join(skill, 'preflight.mjs'), '');
+  await writeFile(path.join(skill, 'init-git.mjs'), '');
   await writeFile(path.join(bundle, 'package.json'), JSON.stringify({ name: 'agent-knowledge-engine', version: '0.1.0', repository: { url: official } }));
   await writeFile(path.join(bundle, 'scripts', 'ake.mjs'), '');
   await mkdir(path.join(home, '.agents'), { recursive: true });
@@ -81,6 +83,21 @@ test('status reports unknown commit for local source and absent lock ref', async
   const { readInstallation } = await import('../../src/lib/installation.mjs');
   const result = await readInstallation({ entry: path.join(bundle, 'scripts', 'ake.mjs'), home, env: { DSH_AGENTS_HOME: path.join(home, '.agents') } });
   assert.equal(result.version, '0.1.0'); assert.equal(result.commit, null); assert.equal(result.source, repo); assert.equal(result.resourcesComplete, true);
+});
+
+test('installation resource completeness uses literal helper markers and preserves legacy status', async t => {
+  const f = await fixture(t);
+  const { readInstallation } = await import('../../src/lib/installation.mjs');
+  const options = { entry: f.entry, home: f.home, env: { DSH_AGENTS_HOME: path.join(f.home, '.agents') } };
+  assert.equal((await readInstallation(options)).resourcesComplete, true);
+  await rm(path.join(f.skill, 'preflight.mjs'));
+  assert.equal((await readInstallation(options)).resourcesComplete, false, 'literal preflight marker requires its helper');
+  await writeFile(path.join(f.skill, 'preflight.mjs'), '');
+  await rm(path.join(f.skill, 'init-git.mjs'));
+  assert.equal((await readInstallation(options)).resourcesComplete, false, 'literal init-git marker requires its helper');
+  await writeFile(path.join(f.skill, 'SKILL.md'), '# Legacy Skill without preflight or init-git markers');
+  await rm(path.join(f.skill, 'preflight.mjs'));
+  assert.equal((await readInstallation(options)).resourcesComplete, true, 'a legacy Skill without either helper marker remains complete');
 });
 
 test('valid official ref and canonical plus matching Claude symlink are identified', async t => {

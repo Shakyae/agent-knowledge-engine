@@ -63,6 +63,27 @@ test('non-Git target reports the exact work-tree failure and writes nothing', as
   assert.deepEqual(await readdir(dir), before);
 });
 
+test('init distinguishes a bare repository from a non-Git target', async t => {
+  const dir = await temp(t);
+  const bare = path.join(dir, 'bare.git');
+  const created = spawnSync('git', ['init', '--bare', '--quiet', bare], { encoding: 'utf8' });
+  assert.equal(created.status, 0, created.stderr);
+  const before = await readdir(bare);
+  const result = run(['--dir', bare], dir);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /bare Git repository/);
+  assert.deepEqual(await readdir(bare), before);
+});
+
+test('init reports an unavailable Git executable without writing', async t => {
+  const dir = await temp(t), emptyPath = path.join(dir, 'empty-path');
+  await mkdir(emptyPath);
+  const result = spawnSync(process.execPath, [cli, 'init', '--dir', dir], { cwd: dir, env: { ...process.env, PATH: emptyPath }, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Git is unavailable/);
+  assert.deepEqual(await readdir(dir), ['empty-path']);
+});
+
 test('existing differing project files are not overwritten', async t => {
   const dir = await temp(t); gitInit(dir);
   const config = path.join(dir, '.ake/config.json'); await mkdir(path.dirname(config), { recursive: true });

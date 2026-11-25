@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import path from 'node:path';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -39,7 +39,7 @@ function parseArgs(args) {
     else if (args[i] === '--dir' && args[i + 1]) target = args[++i];
     else throw new Error(`unknown or incomplete argument: ${args[i]}`);
   }
-  if (!target) throw new Error('usage: node <absolute-skill-path>/bootstrap.mjs --dir <absolute-Git-project> [--dry-run]');
+  if (!target) throw new Error('usage: node <absolute-skill-path>/bootstrap.mjs --dir <absolute-target> [--dry-run]');
   if (!path.isAbsolute(target)) throw new Error('--dir must be an absolute path; resolve it before invoking the Skill bootstrap');
   return { target, dryRun };
 }
@@ -54,8 +54,42 @@ function runGit(args, cwd) {
   return spawnSync('git', args, { cwd, encoding: 'utf8', env: cleanGitEnv() });
 }
 
+function findGitMarker(target) {
+  let current = target;
+  while (true) {
+    const marker = path.join(current, '.git');
+    try { return { path: marker, info: lstatSync(marker) }; }
+    catch (error) {
+      if (error.code !== 'ENOENT') return { path: marker, error };
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
 function runCli(args) {
   return spawnSync(process.execPath, [bundledCli, ...args], { encoding: 'utf8' });
+}
+
+function inspectProjectFile(root, relative) {
+  const parts = relative.split(/[\\/]/);
+  let current = root;
+  for (const [index, part] of parts.entries()) {
+    current = path.join(current, part);
+    let stat;
+    try { stat = lstatSync(current); }
+    catch (error) {
+      if (error.code === 'ENOENT') return { kind: 'missing', path: current };
+      if (error.code === 'ENOTDIR') return { kind: 'invalid', path: current, reason: 'an ancestor is not a directory' };
+      return { kind: 'error', path: current, reason: error.message };
+    }
+    if (stat.isSymbolicLink()) return { kind: 'invalid', path: current, reason: 'symbolic links are not accepted for project config/CLI paths' };
+    const last = index === parts.length - 1;
+    if (!last && !stat.isDirectory()) return { kind: 'invalid', path: current, reason: 'an ancestor is not a directory' };
+    if (last && !stat.isFile()) return { kind: 'invalid', path: current, reason: 'entry is not a regular file' };
+  }
+  return { kind: 'present', path: current };
 }
 
 function existingVersionMessage(configPath) {
@@ -105,12 +139,15 @@ async function main() {
   if (inside.status !== 0 || inside.stdout.trim() !== 'true') {
     const bare = runGit(['-C', target, 'rev-parse', '--is-bare-repository']);
     if (bare.status === 0 && bare.stdout.trim() === 'true') {
-      return fail(`target is a bare Git repository, not a work tree: ${target}. Select a non-bare work tree; no files were written.`);
+      return fail(`BARE_REPOSITORY: target is a bare Git repository, not a work tree: ${target}. Select a non-bare work tree; no files were written.`);
     }
+    const marker = findGitMarker(target);
+    if (marker?.error) return fail(`GIT_METADATA_UNAVAILABLE: cannot inspect ${marker.path} (${marker.error.message}); no files were written.`);
+    if (marker) return fail(`GIT_METADATA_INVALID: ${marker.path} exists but Git could not verify a work tree; inspect it manually; no files were written.`);
     if (inside.status !== 0 && /not a git repository/i.test(inside.stderr ?? '')) {
-      return fail(`not a Git work tree: ${target}. Ask the user to select or initialize a Git project; bootstrap performs zero writes and never runs git init.`);
+      return fail(`NOT_GIT_WORKTREE: ${target} is not inside a Git work tree. Bootstrap did not run git init and wrote no project files.`);
     }
-    return fail(`Git could not verify ${target} as a work tree (rev-parse failed or reported no work tree). Do not treat this as a new project; no files were written.`);
+    return fail(`GIT_VERIFY_FAILED: Git could not verify ${target} as a work tree (rev-parse failed or reported no work tree). Do not treat this as a new project; no files were written.`);
   }
   const rootResult = runGit(['-C', target, 'rev-parse', '--show-toplevel']);
   if (rootResult.status !== 0 || !rootResult.stdout.trim()) {
@@ -126,11 +163,18 @@ async function main() {
 
   const configPath = path.join(target, '.ake', 'config.json');
   const cliPath = path.join(target, '.ake', 'tools', 'scripts', 'ake.mjs');
-  const hasConfig = existsSync(configPath) && statSync(configPath).isFile();
-  const hasCli = existsSync(cliPath) && statSync(cliPath).isFile();
-  if (hasConfig && hasCli) {
+  const configState = inspectProjectFile(target, '.ake/config.json');
+  const cliState = inspectProjectFile(target, '.ake/tools/scripts/ake.mjs');
+  for (const state of [configState, cliState]) {
+    if (state.kind === 'invalid') return fail(`EXISTING_PATH_INVALID: refusing to initialize because ${state.path} is unsafe or not a regular project file (${state.reason}); no project files were written.`);
+    if (state.kind === 'error') return fail(`EXISTING_PATH_UNAVAILABLE: cannot inspect ${state.path} (${state.reason}); no project files were written.`);
+  }
+  if (configState.kind === 'present' && cliState.kind === 'present') {
     console.log(`AKE bootstrap already exists in ${target}. ${existingVersionMessage(configPath)}`);
     return 0;
+  }
+  if (configState.kind !== cliState.kind) {
+    return fail(`PARTIAL_INITIALIZATION: ${configState.path} is ${configState.kind} and ${cliState.path} is ${cliState.kind}; back up and review this project before initializing; no project files were written.`);
   }
 
   const missing = requiredResources.filter((relative) => {
