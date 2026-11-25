@@ -321,7 +321,7 @@ test('pinned acquisition uses an isolated npm prefix and disables lifecycle scri
   const workspace = path.join(root, 'workspace'), bin = path.join(root, 'bin'), capture = path.join(root, 'npm-capture.json');
   await mkdir(workspace); await mkdir(bin);
   const npm = path.join(bin, 'npm');
-  const npmScript = `const fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2); fs.writeFileSync(process.env.AKE_CAPTURE, JSON.stringify({args,home:process.env.HOME,cache:process.env.npm_config_cache,userconfig:process.env.npm_config_userconfig,globalconfig:process.env.npm_config_globalconfig})); const prefix=args[args.indexOf('--prefix')+1], root=path.join(prefix,'node_modules','skills'); fs.mkdirSync(path.join(root,'bin'),{recursive:true}); fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'skills',version:'1.8.1',bin:{skills:'bin/cli.mjs'}})); fs.writeFileSync(path.join(root,'bin','cli.mjs'),\"if(process.argv[2]==='--version') console.log('skills 1.8.1');\");\n`;
+  const npmScript = `const fs=require('node:fs'),path=require('node:path'),args=process.argv.slice(2); fs.writeFileSync(process.env.AKE_CAPTURE, JSON.stringify({args,home:process.env.HOME,userProfile:process.env.USERPROFILE,appData:process.env.APPDATA,localAppData:process.env.LOCALAPPDATA,tmp:process.env.TMP,temp:process.env.TEMP,cache:process.env.npm_config_cache,userconfig:process.env.npm_config_userconfig,globalconfig:process.env.npm_config_globalconfig})); const prefix=args[args.indexOf('--prefix')+1], root=path.join(prefix,'node_modules','skills'); fs.mkdirSync(path.join(root,'bin'),{recursive:true}); fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'skills',version:'1.8.1',bin:{skills:'bin/cli.mjs'}})); fs.writeFileSync(path.join(root,'bin','cli.mjs'),\"if(process.argv[2]==='--version') console.log('skills 1.8.1');\");\n`;
   await writeFile(npm, `#!/usr/bin/env node\n${npmScript}`); await chmod(npm, 0o755);
   // resolveWindowsCli intentionally requires both npm.cmd and verifiable adjacent npm package metadata.
   const npmPackage = path.join(bin, 'node_modules', 'npm');
@@ -329,13 +329,34 @@ test('pinned acquisition uses an isolated npm prefix and disables lifecycle scri
   await writeFile(path.join(bin, 'npm.cmd'), '@echo off\r\n');
   await writeFile(path.join(npmPackage, 'package.json'), JSON.stringify({ name: 'npm', bin: { npm: 'bin/npm-cli.js' } }));
   await writeFile(path.join(npmPackage, 'bin', 'npm-cli.js'), npmScript);
-  const { acquirePinnedSkillsCli } = await import('../../src/lib/update.mjs');
+  const { acquirePinnedSkillsCli, resolveWindowsCli } = await import('../../src/lib/update.mjs');
+  if (process.platform !== 'win32') await symlink(process.execPath, path.join(bin, 'node'));
   const userCache = path.join(root, 'user-cache');
-  const acquired = await acquirePinnedSkillsCli({ npmDirectory: workspace, baseEnvironment: cleanTestEnv({ PATH: `${bin}${path.delimiter}${path.dirname(process.execPath)}`, HOME: path.join(root, 'user-home'), NPM_CONFIG_CACHE: userCache, AKE_CAPTURE: capture }) });
+  const baseEnvironment = cleanTestEnv({ HOME: path.join(root, 'user-home'), NPM_CONFIG_CACHE: userCache, AKE_CAPTURE: capture });
+  for (const key of Object.keys(baseEnvironment)) if (['path', 'pathext', 'ake_capture'].includes(key.toLowerCase())) delete baseEnvironment[key];
+  baseEnvironment.PATH = bin;
+  baseEnvironment.PATHEXT = '.CMD';
+  baseEnvironment.AKE_CAPTURE = capture;
+  const windowsEnvironment = baseEnvironment;
+  const emptyPath = path.join(root, 'empty-path'); await mkdir(emptyPath);
+  const missingEnvironment = { ...baseEnvironment, PATH: emptyPath, AKE_CAPTURE: path.join(root, 'missing-npm-capture.json') };
+  const missingNpm = await resolveWindowsCli('npm', { env: missingEnvironment });
+  assert.equal(missingNpm, null, 'an isolated PATH without npm must fail discovery rather than search the host PATH');
+  await assert.rejects(acquirePinnedSkillsCli({ npmDirectory: path.join(root, 'missing-npm-workspace'), baseEnvironment: missingEnvironment, platform: 'win32' }), error => error.code === 'PREFLIGHT' && /npm is unavailable/.test(error.message));
+  await assert.rejects(lstat(path.join(root, 'missing-npm-capture.json')), { code: 'ENOENT' });
+  await assert.rejects(lstat(path.join(root, 'missing-npm-workspace', 'node_modules')), { code: 'ENOENT' });
+  const resolvedWindowsNpm = await resolveWindowsCli('npm', { env: windowsEnvironment });
+  assert.equal(resolvedWindowsNpm?.command, process.execPath, 'Windows resolver must select the isolated Node-run npm stub');
+  assert.deepEqual(resolvedWindowsNpm?.prefix, [await realpath(path.join(npmPackage, 'bin', 'npm-cli.js'))], 'Windows resolver must use adjacent fixture metadata, not a host npm installation');
+  const acquired = await acquirePinnedSkillsCli({ npmDirectory: workspace, baseEnvironment });
   const captured = JSON.parse(await readFile(capture, 'utf8'));
   assert.equal(captured.args[0], 'install'); assert.ok(captured.args.includes('--ignore-scripts')); assert.ok(captured.args.includes('skills@1.8.1'));
+  assert.equal(captured.args[captured.args.indexOf('--prefix') + 1], workspace);
   assert.ok(captured.args.includes('--registry=https://registry.npmjs.org'));
-  assert.equal(captured.home, path.join(workspace, 'home')); assert.equal(captured.cache, path.join(workspace, 'cache')); assert.equal(captured.userconfig, path.join(workspace, 'npmrc-user')); assert.equal(captured.globalconfig, path.join(workspace, 'npmrc-global')); await assert.rejects(lstat(userCache), { code: 'ENOENT' });
+  assert.equal(captured.home, path.join(workspace, 'home')); assert.equal(captured.userProfile, path.join(workspace, 'home'));
+  assert.equal(captured.appData, path.join(workspace, 'home', 'AppData', 'Roaming')); assert.equal(captured.localAppData, path.join(workspace, 'home', 'AppData', 'Local'));
+  assert.equal(captured.tmp, workspace); assert.equal(captured.temp, workspace);
+  assert.equal(captured.cache, path.join(workspace, 'cache')); assert.equal(captured.userconfig, path.join(workspace, 'npmrc-user')); assert.equal(captured.globalconfig, path.join(workspace, 'npmrc-global')); await assert.rejects(lstat(userCache), { code: 'ENOENT' });
   assert.equal(acquired.version, '1.8.1'); assert.equal(acquired.command, process.execPath); assert.equal(path.basename(acquired.prefix[0]), 'cli.mjs');
 });
 

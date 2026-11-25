@@ -156,42 +156,66 @@ test('CLI and standalone Skill helpers enforce the runtime before task work', as
   await assert.rejects(access(path.join(siblingTarget, '.ake')), { code: 'ENOENT' });
 
   if (process.platform === 'win32' && supported) {
-    const shortPathFor = directory => {
-      const result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', `for %I in ("${directory}") do @echo %~sI`], { cwd: root, encoding: 'utf8' });
-      assert.equal(result.status, 0, result.stderr);
-      const value = result.stdout.trim();
-      assert.ok(value.includes('~'), `Windows runner did not provide an 8.3 path for ${directory}: ${value}`);
-      return value;
-    };
     const identity = value => { const info = statSync(value, { bigint: true }); return `${info.dev}:${info.ino}:${info.birthtimeNs}`; };
+    const shortPathScript = path.join(temp, 'print-8dot3-path.cmd');
+    await writeFile(shortPathScript, '@echo off\r\nfor %%I in ("%~1") do @echo %%~sI\r\n');
+    const shortPathFor = directory => {
+      const result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', shortPathScript, directory], { cwd: temp, encoding: 'utf8', env: cleanTestEnv() });
+      assert.equal(result.status, 0, result.stderr);
+      const lines = result.stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+      assert.equal(lines.length, 1, `short-path command must emit exactly one path: ${JSON.stringify({ stdout: result.stdout, stderr: result.stderr })}`);
+      const value = lines[0];
+      assert.ok(path.win32.isAbsolute(value), `short-path command returned a non-absolute path for ${directory}: ${JSON.stringify(value)}`);
+      assert.doesNotMatch(value, /["\r\n]/, `short-path command returned quotes or line breaks: ${JSON.stringify(value)}`);
+      assert.equal(identity(value), identity(directory), `short-path output does not identify the requested directory: ${JSON.stringify({ directory, value })}`);
+      const requestedComponents = path.win32.normalize(directory).split('\\'), returnedComponents = path.win32.normalize(value).split('\\');
+      const hasShortName = returnedComponents.some((component, index) => /~[0-9]+$/i.test(component) && component.toLowerCase() !== requestedComponents[index]?.toLowerCase());
+      return { value, hasShortName };
+    };
+    const injectionSentinel = path.join(temp, 'ake-cmd-injection-sentinel');
+    await assert.rejects(access(injectionSentinel), { code: 'ENOENT' });
+    const hostileDirectory = path.join(temp, 'space & mkdir ake-cmd-injection-sentinel percent%TEMP% bang! caret^ parentheses(1)'); await mkdir(hostileDirectory);
+    shortPathFor(hostileDirectory);
+    await assert.rejects(access(injectionSentinel), { code: 'ENOENT' }, 'cmd metacharacters must not create the isolated injection sentinel');
     const gitRootResult = spawnSync('git', ['-C', bootstrapTarget, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env: cleanTestEnv() });
     assert.equal(gitRootResult.status, 0, gitRootResult.stderr);
-    const gitRoot = gitRootResult.stdout.trim(), shortTarget = shortPathFor(bootstrapTarget);
-    const diagnostics = {
-      requested: shortTarget,
-      targetRealpath: realpathSync(shortTarget),
-      targetNativeRealpath: realpathSync.native(shortTarget),
-      gitRoot,
-      gitRootRealpath: realpathSync(gitRoot),
-      gitRootNativeRealpath: realpathSync.native(gitRoot),
-      targetIdentity: identity(shortTarget),
-      gitRootIdentity: identity(gitRoot),
-      relative: path.win32.relative(realpathSync.native(gitRoot), realpathSync.native(shortTarget)),
-    };
-    console.log(`Windows short-path bootstrap probe: ${JSON.stringify(diagnostics)}`);
-    assert.equal(identity(shortTarget), identity(gitRoot), 'short target and Git root must be the same directory object');
-    const shortBootstrap = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', shortTarget, '--dry-run']);
-    assert.equal(shortBootstrap.status, 1, shortBootstrap.stdout);
-    assert.match(shortBootstrap.stderr, /Skill bootstrap resources are incomplete/);
-    assert.doesNotMatch(shortBootstrap.stderr, /inconsistent work-tree root/);
-    const shortChild = shortPathFor(bootstrapChild);
-    assert.notEqual(identity(shortChild), identity(gitRoot), 'nested target must be a distinct directory object');
-    console.log(`Windows short-path parent probe: ${JSON.stringify({ requested: shortChild, targetIdentity: identity(shortChild), gitRoot, gitRootIdentity: identity(gitRoot), relative: path.win32.relative(realpathSync.native(gitRoot), realpathSync.native(shortChild)) })}`);
-    const nestedResult = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', shortChild, '--dry-run']);
-    assert.equal(nestedResult.status, 1, nestedResult.stdout);
-    assert.match(nestedResult.stderr, /Skill bootstrap resources are incomplete/);
-    assert.doesNotMatch(nestedResult.stderr, /inconsistent work-tree root/);
-    await assert.rejects(access(path.join(bootstrapChild, '.ake')), { code: 'ENOENT' });
+    const gitRoot = gitRootResult.stdout.trim(), shortTargetInfo = shortPathFor(bootstrapTarget), shortTarget = shortTargetInfo.value;
+    if (shortTargetInfo.hasShortName) {
+      const diagnostics = {
+        requested: shortTarget,
+        targetRealpath: realpathSync(shortTarget),
+        targetNativeRealpath: realpathSync.native(shortTarget),
+        gitRoot,
+        gitRootRealpath: realpathSync(gitRoot),
+        gitRootNativeRealpath: realpathSync.native(gitRoot),
+        targetIdentity: identity(shortTarget),
+        gitRootIdentity: identity(gitRoot),
+        relative: path.win32.relative(realpathSync.native(gitRoot), realpathSync.native(shortTarget)),
+      };
+      console.log(`Windows short-path bootstrap probe: ${JSON.stringify(diagnostics)}`);
+      assert.equal(identity(shortTarget), identity(gitRoot), 'short target and Git root must be the same directory object');
+      const shortBootstrap = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', shortTarget, '--dry-run']);
+      assert.equal(shortBootstrap.status, 1, shortBootstrap.stdout);
+      assert.match(shortBootstrap.stderr, /Skill bootstrap resources are incomplete/);
+      assert.doesNotMatch(shortBootstrap.stderr, /inconsistent work-tree root/);
+      const shortChildInfo = shortPathFor(bootstrapChild), shortChild = shortChildInfo.value;
+      assert.notEqual(identity(shortChild), identity(gitRoot), 'nested target must be a distinct directory object');
+      console.log(`Windows short-path parent probe: ${JSON.stringify({ requested: shortChild, targetIdentity: identity(shortChild), gitRoot, gitRootIdentity: identity(gitRoot), relative: path.win32.relative(realpathSync.native(gitRoot), realpathSync.native(shortChild)) })}`);
+      const nestedResult = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', shortChild, '--dry-run']);
+      assert.equal(nestedResult.status, 1, nestedResult.stdout);
+      assert.match(nestedResult.stderr, /Skill bootstrap resources are incomplete/);
+      assert.doesNotMatch(nestedResult.stderr, /inconsistent work-tree root/);
+      await assert.rejects(access(path.join(bootstrapChild, '.ake')), { code: 'ENOENT' });
+    } else {
+      console.log(`Windows 8.3 short names unavailable; validating equivalent project junction paths instead: ${JSON.stringify({ requested: bootstrapTarget, commandPath: shortTarget })}`);
+      const projectAlias = path.join(temp, 'bootstrap-project-alias'); await symlink(bootstrapTarget, projectAlias, 'junction');
+      const aliasedRoot = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', projectAlias, '--dry-run']);
+      assert.equal(aliasedRoot.status, 1, aliasedRoot.stdout); assert.match(aliasedRoot.stderr, /Skill bootstrap resources are incomplete/); assert.doesNotMatch(aliasedRoot.stderr, /inconsistent work-tree root/);
+      const aliasedChild = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', path.join(projectAlias, 'nested-project'), '--dry-run']);
+      assert.equal(aliasedChild.status, 1, aliasedChild.stdout); assert.match(aliasedChild.stderr, /Skill bootstrap resources are incomplete/); assert.doesNotMatch(aliasedChild.stderr, /inconsistent work-tree root/);
+      await assert.rejects(access(path.join(bootstrapTarget, '.ake')), { code: 'ENOENT' });
+      await assert.rejects(access(path.join(bootstrapChild, '.ake')), { code: 'ENOENT' });
+    }
 
     const tempVolume = path.win32.parse(temp).root, checkoutVolume = path.win32.parse(root).root;
     if (tempVolume.toUpperCase() !== checkoutVolume.toUpperCase()) {
