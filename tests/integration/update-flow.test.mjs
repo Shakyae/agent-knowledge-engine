@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createBackup, restoreBackup } from '../../src/lib/install-backup.mjs';
-import { acquirePinnedSkillsCli, makeSkillsEnvironment, runUpdate, updateExitCode } from '../../src/lib/update.mjs';
+import { acquirePinnedSkillsCli, makeSkillsEnvironment, runUpdate, updateExitCode, verifyInstalled } from '../../src/lib/update.mjs';
 import { resolveRemote, runGit } from '../../src/lib/git-remote.mjs';
 import { cleanTestEnv, tempRoot } from '../helpers/test-env.mjs';
 
@@ -35,6 +35,43 @@ async function treeSnapshot(root) {
   }
   await walk(root); return entries.sort((a, b) => a[0].localeCompare(b[0]));
 }
+
+test('target verification preserves legacy commits and requires literal-marked helpers', async t => {
+  const root = await makeWorkDir('ake-target-resource-compat-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const canonical = path.join(root, 'skill'), lockPath = path.join(root, '.skill-lock.json');
+  const ref = 'a'.repeat(40), sourceUrl = 'https://github.com/Shakyae/agent-knowledge-engine.git', repo = 'Shakyae/agent-knowledge-engine';
+  await mkdir(root, { recursive: true });
+  const installation = { canonicalPath: canonical, lockPath };
+  async function payload(skillText, helpers = []) {
+    await rm(canonical, { recursive: true, force: true });
+    const files = new Map([
+      ['SKILL.md', Buffer.from(skillText)],
+      ['bootstrap.mjs', Buffer.from('')],
+      ['resources/ake-source/package.json', Buffer.from('{"name":"agent-knowledge-engine","version":"0.1.0"}')],
+      ['resources/ake-source/scripts/ake.mjs', Buffer.from('')],
+    ]);
+    for (const helper of helpers) files.set(helper, Buffer.from(''));
+    const entries = [];
+    for (const [relativePath, bytes] of files) {
+      const fullPath = path.join(canonical, relativePath);
+      await mkdir(path.dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, bytes);
+      entries.push({ relativePath, type: 'blob', mode: '100644', bytes });
+    }
+    await writeFile(lockPath, JSON.stringify({ skills: { ake: { ref, skillPath: 'skills/ake/SKILL.md', sourceType: 'github', source: repo, sourceUrl } } }));
+    return { targetCommit: ref, repo, sourceUrl, entries };
+  }
+  const legacy = await payload('# Legacy Skill\\n');
+  await verifyInstalled(installation, legacy);
+  const preflightText = '# Current Skill\\nUses preflight.mjs before project operations.\\n';
+  const currentPreflightOnly = await payload(preflightText, ['preflight.mjs']);
+  await verifyInstalled(installation, currentPreflightOnly);
+  const newSkillText = `${preflightText}For explicitly authorized non-Git targets, use init-git.mjs.\\n`;
+  const missingInitGit = await payload(newSkillText, ['preflight.mjs']);
+  await assert.rejects(verifyInstalled(installation, missingInitGit), { code: 'ENOENT' });
+  const current = await payload(newSkillText, ['preflight.mjs', 'init-git.mjs']);
+  await verifyInstalled(installation, current);
+});
 
 test('rollback preserves concurrent non-snapshot skill entries and retains backup with exact warnings', async t => {
   const f = await rollbackFixture(t, 'ake-rollback-preserve-', { skills: { ake: { sourceType: 'local', source: '/legacy' }, other: { ref: 'keep' } } });

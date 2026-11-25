@@ -21,9 +21,11 @@ async function classify(p) {
 
 async function resourcesComplete(root) {
   try {
-    for (const relative of ['SKILL.md', 'bootstrap.mjs', 'resources/ake-source/package.json', 'resources/ake-source/scripts/ake.mjs']) {
-      await readFile(path.join(root, relative));
-    }
+    const skill = await readFile(path.join(root, 'SKILL.md'), 'utf8');
+    const required = ['bootstrap.mjs', 'resources/ake-source/package.json', 'resources/ake-source/scripts/ake.mjs'];
+    // Literal marker heuristic only; it does not parse or authenticate the installed Skill.
+    for (const helper of ['preflight.mjs', 'init-git.mjs']) if (skill.includes(helper)) required.push(helper);
+    for (const relative of required) await readFile(path.join(root, relative));
     return true;
   } catch { return false; }
 }

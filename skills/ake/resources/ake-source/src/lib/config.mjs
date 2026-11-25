@@ -138,9 +138,15 @@ export async function resolveProjectRoot(cwd = process.cwd(), explicit) {
   catch (error) { throw Error(`not a AKE project: cannot resolve project directory ${path.resolve(cwd, explicit ?? '.')}: ${error.message}`); }
   let workTree;
   const insideResult = runGit(start, ['rev-parse', '--is-inside-work-tree']);
+  if (insideResult.error?.code === 'ENOENT') throw Error(`GIT_UNAVAILABLE: not a AKE project: Git is unavailable while resolving ${start}`);
+  if (insideResult.error) throw Error(`not a AKE project: Git could not inspect ${start}: ${insideResult.error.message}`);
   if (insideResult.status !== 0 || insideResult.stdout.trim() !== 'true') {
-    if (explicit) throw Error(`not a AKE project: ${start} is not a valid Git work tree`);
-    throw Error('not a AKE project: no .git repository found');
+    const bareResult = runGit(start, ['rev-parse', '--is-bare-repository']);
+    if (bareResult.status === 0 && bareResult.stdout.trim() === 'true') throw Error(`BARE_REPOSITORY: not a AKE project: ${start} is a bare Git repository, not a work tree`);
+    const clearlyNotRepository = insideResult.status !== 0 && /not a git repository/i.test(insideResult.stderr ?? '');
+    if (clearlyNotRepository && explicit) throw Error(`not a AKE project: ${start} is not a valid Git work tree`);
+    if (clearlyNotRepository) throw Error('NOT_GIT_WORKTREE: not a AKE project: no .git repository found');
+    throw Error(`not a AKE project: Git could not verify ${start} as a work tree: ${(insideResult.stderr ?? '').trim() || `exit ${insideResult.status}`}`);
   }
   const topResult = runGit(start, ['rev-parse', '--show-toplevel']);
   if (topResult.status !== 0 || !topResult.stdout.trim()) throw Error(`not a AKE project: cannot resolve Git work tree root from ${start}`);
