@@ -56,6 +56,7 @@ test('status JSON and text first line match pre-change HEAD on a populated proje
   const headJson = spawnSync(process.execPath, [oldCli, 'status', '--json'], { cwd: project, encoding: 'utf8', env });
   assert.equal(currentJson.status, 0, currentJson.stderr); assert.equal(headJson.status, 0, headJson.stderr);
   const current = JSON.parse(currentJson.stdout), baseline = JSON.parse(headJson.stdout); delete current.installation; delete baseline.installation;
+  assert.equal(current.cliVersion, JSON.parse(await readFile(path.join(repo, 'package.json'), 'utf8')).version); delete current.cliVersion; delete baseline.cliVersion;
   assert.deepEqual(current, baseline); assert.equal(current.knowledgeDocuments, 2); assert.equal(current.candidates, 2);
   assert.equal(current.byTypeAndStatus['note/proposed'], 1); assert.equal(current.byTypeAndStatus['cookbook/active'], 1);
   assert.deepEqual(current.pendingCandidates, ['C-DRAFT', 'C-SUBMITTED']); assert.deepEqual(current.verified, { unknown: 1, pending: 1 });
@@ -65,12 +66,12 @@ test('status JSON and text first line match pre-change HEAD on a populated proje
   assert.equal(currentText.stdout.split(/\r?\n/)[0], headText.stdout.split(/\r?\n/)[0]);
 });
 
-test('status preserves all legacy JSON fields and adds installation only', async t => {
+test('status preserves all legacy JSON fields and adds installation and CLI version', async t => {
   const work = await temp(t), g = spawnSync('git', ['init', '--quiet', work]); assert.equal(g.status, 0);
   const result = spawnSync(process.execPath, [cli, 'status', '--json'], { cwd: work, encoding: 'utf8', env: cleanTestEnv({ HOME: work, DSH_AGENTS_HOME: path.join(work, '.agents') }) });
   assert.equal(result.status, 0, result.stderr);
   const parsed = JSON.parse(result.stdout);
-  assert.deepEqual(Object.keys(parsed).sort(), ['project', 'knowledgeDocuments', 'byTypeAndStatus', 'candidates', 'pendingCandidates', 'verified', 'installation'].sort());
+  assert.deepEqual(Object.keys(parsed).sort(), ['project', 'knowledgeDocuments', 'byTypeAndStatus', 'candidates', 'pendingCandidates', 'verified', 'installation', 'cliVersion'].sort());
   assert.equal(parsed.project, await realpath(work));
   assert.equal(typeof parsed.knowledgeDocuments, 'number'); assert.equal(typeof parsed.byTypeAndStatus, 'object');
   assert.equal(typeof parsed.candidates, 'number'); assert.ok(Array.isArray(parsed.pendingCandidates));

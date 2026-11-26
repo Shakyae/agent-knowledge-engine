@@ -5,7 +5,7 @@ import { readFile, readdir, lstat, realpath, readlink, mkdtemp, rm, mkdir, write
 import { fileURLToPath } from 'node:url';
 import { readInstallation } from './installation.mjs';
 import { resolveOfficialSource, resolveRemote, runGit } from './git-remote.mjs';
-import { acquireLock, createBackup, restoreBackup, cleanupBackups, snapshotTree, sha256 } from './install-backup.mjs';
+import { acquireLock, createBackup, validateBackup, verifyRollbackAnchors, cleanupBackups, snapshotTree, sha256 } from './install-backup.mjs';
 
 const UPDATE_FLAGS = new Set(['--dry-run', '--json', '--accept-customized']);
 export function parseUpdateArgs(argv) {
@@ -86,20 +86,24 @@ export async function resolveInstallation({ home = os.homedir(), env = process.e
     if (!canonicalInfo) issues.push('checkout bootstrap target canonical installation is unavailable');
   } else if (installation.scope !== 'user' || installation.mode !== 'canonical' || installation.canonicalPath !== canonicalInfo || !installation.loadPath || await realpath(installation.loadPath) !== canonicalInfo) issues.push('cannot prove this process is using the canonical user Skill');
   const claude = path.join(home, '.claude', 'skills', 'ake');
+  const codebuddy = path.join(home, '.codebuddy', 'skills', 'ake');
   const agentPaths = [{ path: canonical, mode: 'canonical' }];
-  try {
-    const stat = await lstat(claude);
-    if (stat.isSymbolicLink() && await realpath(claude) === canonicalInfo) agentPaths.push({ path: claude, mode: 'symlink' });
-    else issues.push(`unsupported additional AKE path: ${claude}`);
-  } catch (e) { if (e.code !== 'ENOENT') issues.push(`cannot inspect ${claude}`); }
-  const allHomes = [path.join(home, '.agents', 'skills'), path.join(home, '.claude', 'skills')];
+  for (const candidate of [claude, codebuddy]) {
+    try {
+      const stat = await lstat(candidate);
+      if (stat.isSymbolicLink() && await realpath(candidate) === canonicalInfo) agentPaths.push({ path: candidate, mode: 'symlink' });
+      else issues.push(`unsupported additional AKE path: ${candidate}`);
+    } catch (e) { if (e.code !== 'ENOENT') issues.push(`cannot inspect ${candidate}`); else if (await lstat(candidate).catch(() => null)) issues.push(`broken AKE symlink: ${candidate}`); }
+  }
+  if (agentPaths.some(item => item.path === codebuddy) && !agentPaths.some(item => item.path === claude)) issues.push('CodeBuddy-only linked topology is not safely supported');
+  const allHomes = [path.join(home, '.agents', 'skills'), path.join(home, '.claude', 'skills'), path.join(home, '.codebuddy', 'skills')];
   const absent = error => error.code === 'ENOENT' || error.code === 'ENOTDIR';
   for (const name of await readdir(home).catch(error => absent(error) ? [] : Promise.reject(error))) {
     const owner = path.join(home, name);
     const ownerInfo = await lstat(owner).catch(() => null);
     if (!ownerInfo || (!ownerInfo.isDirectory() && !ownerInfo.isSymbolicLink())) continue;
     const candidate = path.join(owner, 'skills', 'ake');
-    if (candidate === canonical || candidate === claude || (name === '.agents' && await realpath(candidate).catch(() => null) === canonicalInfo)) continue;
+    if (candidate === canonical || candidate === claude || candidate === codebuddy || (name === '.agents' && await realpath(candidate).catch(() => null) === canonicalInfo)) continue;
     try { await lstat(candidate); issues.push(`unsupported additional AKE path: ${candidate}`); }
     catch (error) { if (!absent(error)) issues.push(`cannot inspect ${candidate}`); }
   }
@@ -265,10 +269,11 @@ async function snapshotInstallEffects(installation) {
   const lockInfo = await lstat(installation.lockPath);
   if (!lockInfo.isFile() || lockInfo.isSymbolicLink()) throw new Error('Skills lock is not a regular file');
   const lock = JSON.parse(await readFile(installation.lockPath, 'utf8'));
-  const nonAke = { ...lock.skills }; delete nonAke.ake;
+  const nonAke = { ...lock, skills: { ...lock.skills } }; delete nonAke.skills.ake;
   const listings = {}, protectedSkills = [];
-  const skillsRoots = [path.join(installation.agentsHome, 'skills'), path.join(path.dirname(installation.agentsHome), '.claude', 'skills')];
-  for (const directory of [...skillsRoots, path.join(path.dirname(installation.agentsHome), '.claude')]) {
+  const home = path.dirname(installation.agentsHome);
+  const skillsRoots = [path.join(installation.agentsHome, 'skills'), ...['.claude', '.codebuddy'].map(agent => path.join(home, agent, 'skills'))];
+  for (const directory of [...skillsRoots, path.join(home, '.claude'), path.join(home, '.codebuddy')]) {
     try {
       const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`unsafe side-effect directory: ${directory}`);
       const names = (await readdir(directory)).sort(); listings[directory] = names;
@@ -284,7 +289,7 @@ async function snapshotInstallEffects(installation) {
   }
   const paths = [];
   for (const item of installation.agentPaths ?? []) {
-    try { const stat = await lstat(item.path); paths.push({ path: item.path, type: stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : 'other', target: await realpath(item.path) }); }
+    try { const stat = await lstat(item.path); paths.push({ path: item.path, type: stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : 'other', target: await realpath(item.path), linkTarget: stat.isSymbolicLink() ? await readlink(item.path) : null }); }
     catch (error) { if (error.code !== 'ENOENT') throw error; paths.push({ path: item.path, type: 'missing' }); }
   }
   const stable = value => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
@@ -371,7 +376,7 @@ export async function createNpmWorkspace(home, { platform = process.platform, te
 
 export function makeSkillsEnvironment(base, home, npmDirectory, platform = process.platform) {
   const env = { ...base };
-  for (const key of Object.keys(env)) if (/^(GIT_.*|npm_config_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|HOMEDRIVE|HOMEPATH|XDG_CONFIG_HOME|XDG_CACHE_HOME)$/i.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/^(GIT_.*|npm_config_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|HOMEDRIVE|HOMEPATH|XDG_CONFIG_HOME|XDG_CACHE_HOME|CLAUDE_CONFIG_DIR|CODEX_HOME|VIBE_HOME|HERMES_HOME|AUTOHAND_HOME|GROK_HOME|SARVAM_HOME|REASONIX_HOME|FLATPAK_XDG_CONFIG_HOME)$/i.test(key)) delete env[key];
   const paths = platform === 'win32' ? path.win32 : path;
   const result = {
     ...env, HOME: home, USERPROFILE: home, APPDATA: paths.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: paths.join(home, 'AppData', 'Local'),
@@ -453,6 +458,22 @@ function publicInstallation(value) {
   return { os: platform, loadPath, canonicalPath, scope, mode, version, source, sourceType, commit, resourcesComplete, agentPaths, warnings, initiatedBy: value.initiatedBy ?? null, scopeBefore: value.scopeBefore ?? scope, bootstrap: value.bootstrap ?? false };
 }
 
+const AGENT_PATH_OVERRIDES = /^(CLAUDE_CONFIG_DIR|CODEX_HOME|VIBE_HOME|HERMES_HOME|AUTOHAND_HOME|GROK_HOME|SARVAM_HOME|REASONIX_HOME|FLATPAK_XDG_CONFIG_HOME|XDG_CONFIG_HOME)$/i;
+function rejectAgentPathOverrides(...environments) {
+  const present = new Set();
+  for (const env of environments) for (const [key, value] of Object.entries(env ?? {})) {
+    if (AGENT_PATH_OVERRIDES.test(key) && value != null && String(value) !== '') present.add(key);
+  }
+  if (present.size) throw Object.assign(new Error(`agent path overrides require manual review before update: ${[...present].sort().join(', ')}`), { code: 'IDENTITY_AMBIGUOUS' });
+}
+
+// Production entry accepts only parsed CLI arguments. Dependency-injected runUpdate
+// remains available to isolated tests and is not used by the production CLI.
+export async function runProductionUpdate(argv = []) {
+  if (!Array.isArray(argv) || argv.some(arg => typeof arg !== 'string')) throw Object.assign(new Error('update arguments must be a string array'), { code: 'USAGE' });
+  return runUpdate({ argv: [...argv] });
+}
+
 export async function runUpdate(options = {}) {
   const flags = options.flags ?? parseUpdateArgs(options.argv ?? []);
   const entry = options.entry ?? options.installationOptions?.entry ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../scripts/ake.mjs');
@@ -468,6 +489,7 @@ export async function runUpdate(options = {}) {
     installationOptions = { ...installationOptions, sourceInfo: source };
     const platform = options.platform ?? process.platform;
     const baseEnvironment = options.env ?? process.env;
+    rejectAgentPathOverrides(baseEnvironment, installationOptions.env ?? process.env);
     installation = await (options.resolveInstallation ?? resolveInstallation)(installationOptions);
     output.installationBefore = publicInstallation(installation);
     output.initiatedBy = installation.initiatedBy ?? 'installed-bundle'; output.scopeBefore = installation.scopeBefore ?? installation.scope; output.bootstrap = Boolean(installation.bootstrap);
@@ -484,8 +506,10 @@ export async function runUpdate(options = {}) {
     }
     if (flags.dryRun) { report('dry_run', 'plan', null, `Would update from ${existingRef ?? 'unknown/local'} to ${remote.targetCommit}; no installation changes made`); return output; }
     const bootstrapInProgress = Boolean(installation.bootstrap);
+    const beforeLock = installation;
     heldLock = await (options.acquireLock ?? acquireLock)(installation.agentsHome);
     installation = await (options.resolveInstallation ?? resolveInstallation)({ ...installationOptions, allowCompletedBootstrap: bootstrapInProgress });
+    if (installation.canonicalPath !== beforeLock.canonicalPath || JSON.stringify(installation.agentPaths) !== JSON.stringify(beforeLock.agentPaths) || (installation.lockBytes && beforeLock.lockBytes && !Buffer.from(installation.lockBytes).equals(Buffer.from(beforeLock.lockBytes)))) throw Object.assign(new Error('installation identity, links or lock changed while acquiring update lock'), { code: 'DRIFT' });
     output.installationBefore = publicInstallation(installation);
     if (installation.lock?.skills?.ake?.installMode === 'copy' && (installation.agentPaths ?? []).some(item => item.mode === 'symlink')) {
       throw Object.assign(new Error('copy-mode Skills lock conflicts with an existing agent symlink; refusing because Skills CLI --copy may replace that symlink with an unbacked copy'), { code: 'IDENTITY_AMBIGUOUS' });
@@ -527,16 +551,23 @@ export async function runUpdate(options = {}) {
     output.backupPath = backup.backupPath;
     const effectsAtBackup = await (options.snapshotInstallEffects ?? snapshotInstallEffects)(installation);
     if (effectsAtBackup !== effectsBefore) throw Object.assign(new Error('installation side effects changed while creating backup'), { code: 'DRIFT' });
+    if (!options.createBackup) {
+      await verifyRollbackAnchors(backup);
+      await validateBackup(backup.backupPath);
+      const current = options.resolveInstallation ? installation : await resolveInstallation({ ...installationOptions, allowCompletedBootstrap: bootstrapInProgress });
+      if (!(await readFile(installation.lockPath)).equals(Buffer.from(backup.originalLockBytes)) || JSON.stringify(current.agentPaths) !== JSON.stringify(installation.agentPaths) || JSON.stringify(await snapshotTree(current.canonicalPath)) !== JSON.stringify(backup.originalTree)) throw Object.assign(new Error('installation, links or complete lock changed after backup'), { code: 'DRIFT' });
+    }
     const modeArgs = installation.lock?.skills?.ake?.installMode === 'copy' ? ['--copy'] : [];
-    const agentArgs = ['-a', 'codex']; if ((installation.agentPaths ?? []).some(x => x.path.endsWith(path.join('.claude', 'skills', 'ake')))) agentArgs.push('-a', 'claude-code');
+    const linkedAgents = [['.claude', 'claude-code'], ['.codebuddy', 'codebuddy']].filter(([dir]) => (installation.agentPaths ?? []).some(x => x.path === path.join(targetHome, dir, 'skills', 'ake'))).map(([, id]) => id);
+    const agentArgs = (linkedAgents.length === 1 ? ['codex', ...linkedAgents] : linkedAgents.length ? linkedAgents : ['codex']).flatMap(id => ['-a', id]);
     installStarted = true;
     try { await (options.runSkillsAdd ?? spawnCapture)(cli, [...cliPrefix, 'add', `${source.repo}@${remote.targetCommit}`, '--skill', 'ake', '-g', '-y', ...modeArgs, ...agentArgs], { env: skillsEnvironment, shell: false }); }
-    catch (error) { throw Object.assign(error, { code: error.code ?? 'INSTALL' }); }
+    catch (error) { throw Object.assign(new Error(error.message, { cause: error }), { code: 'INSTALL' }); }
     try {
       const effectsAfter = await (options.snapshotInstallEffects ?? snapshotInstallEffects)(installation);
       if (effectsBefore !== effectsAfter) throw new Error('Skills CLI changed non-AKE lock entries, agent directory entries, or canonical/link identity');
       await (options.verifyInstalled ?? verifyInstalled)(installation, remote, { platform });
-    } catch (error) { throw Object.assign(error, { code: error.code ?? 'VERIFY' }); }
+    } catch (error) { throw Object.assign(new Error(error.message, { cause: error }), { code: 'VERIFY' }); }
     const installationAfter = await (options.readAfter ?? (async () => await resolveInstallation({ ...installationOptions, allowCompletedBootstrap: Boolean(installation.bootstrap) })))();
     output.installationAfter = publicInstallation(installationAfter);
     if (installationAfter.sourceDeclarationMissing) output.warnings.push('已安装版本未声明 repository.url；下次更新需要包含该字段的版本，否则将因无法确认来源而拒绝');
@@ -548,15 +579,8 @@ export async function runUpdate(options = {}) {
     if (!output.installationBefore && error.installation) output.installationBefore = publicInstallation(error.installation);
     output.rollback = 'not_needed';
     if (backup && installStarted) {
-      try {
-        await (options.restoreBackup ?? restoreBackup)(backup, { lockPath: installation.lockPath });
-        if (typeof effectsBefore !== 'undefined') {
-          const effectsAfterRollback = await (options.snapshotInstallEffects ?? snapshotInstallEffects)(installation);
-          if (effectsAfterRollback !== effectsBefore) throw new Error('post-rollback side-effect snapshot differs from pre-install state');
-        }
-        output.rollback = 'succeeded';
-      }
-      catch (rollbackError) { output.warnings.push(...(rollbackError.warnings ?? [])); output.rollback = 'failed'; output.backupPath = backup.backupPath; report('failed', 'rollback', 'ROLLBACK_FAILED', `${error.message}; rollback failed: ${rollbackError.message}; preserve backup and reconcile the listed paths manually from ${backup.backupPath}`); }
+      output.rollback = 'not_attempted';
+      output.warnings.push(`安装已启动或启动结果未知；未自动恢复或清理备份。请保持其他程序停写，检查当前安装、链接和 lock；核对备份 ${backup.backupPath}/manifest.json 与 data 后，先另存现场，再由人工决定如何恢复，勿盲目覆盖或重试。备份路径：${backup.backupPath}`);
     }
     if (backup && !installStarted) output.warnings.push('安装进程尚未启动；保留已验证备份，不恢复现场');
     if (output.rollback !== 'failed') {

@@ -46,6 +46,7 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
   1. 若本 Skill 目录内存在 `resources/ake-source/scripts/ake.mjs` 且支持 `update` → 用它执行；
   2. 否则，若当前处于 AKE 官方源码 checkout（`origin` 为官方仓库、`skills/ake` 无未提交改动）→ 用 `node <checkout>/scripts/ake.mjs update`；
   3. 两者都不满足 → 停止并说明原因，**不得**由模型自行拼 shell、Git、复制或清理命令。
+- 更新期间由用户确保其他程序不修改 AKE；锁不能约束不协作者。支持 canonical 与 Claude Code、CodeBuddy 双链接，不代表支持其他 Agent、独立副本或损坏链接。安装器一旦可能启动，失败或结果未知均不自动恢复：保留现场及输出中的备份路径，持续停写，检查备份 manifest、data 与当前安装、链接和 lock，先另存现场，核对差异后由人工决定恢复，勿盲目重试。更新不是原子事务。
 - 更新成功后提示：DSH 每次加载/注入 Skill 时读取磁盘，**本 Session 已注入的旧内容不会自动刷新**；请在新消息中重新调用 `/ake`，若仍使用旧内容则新开 Session。**无需**重启整个 DSH。
 - 任何会覆盖用户定制、或无法确认安装目标的情况，先询问用户。
 
@@ -53,7 +54,7 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
 
 1. `/ake` → 只显示本帮助（不检索、不沉淀）。
 2. 在项目目录执行 `ake init` → 初始化**当前目录**；换到别处初始化才用 `ake init --dir <project>`。
-3. `/ake status` 查看版本/安装/更新状态；需要更新时 `/ake update`（自动备份、校验、失败回滚）。
+3. `/ake status` 查看版本/安装/更新状态；需要更新时 `/ake update`（备份与校验；失败保留现场，人工检查恢复）。
 
 ## 安装、初始化与日常使用的区别
 
@@ -83,7 +84,9 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
 node <本 Skill base directory 的绝对路径>/preflight.mjs --dir <绝对目标路径>
 ```
 
-Helper 只运行既有项目 CLI 的 `status --json`，要求返回绝对 `project` 路径且其 realpath 与目标 realpath 相同；status 成功仅验证项目选择，不证明任何任务命令兼容。相对、缺失、不可解析或不匹配的路径均停止。预检后，Agent 在相同真实 cwd/env 直接执行实际任务所需的命令。若只读操作（例如 `search`）需要任何 CLI options，先在同一真实 cwd/env 只读运行 `node .ake/tools/scripts/ake.mjs --help`，并检查该 CLI 当前 `search` usage 是否精确声明本次每个所需 flag 及值形态（例如 `--status STATUS`、`--budget-bytes N`、`--type TYPE`、`--limit N`、`--json`）。不同版本的 help 文字差异本身不单独判失败；但所需参数缺失、help 失败/不可读/无法解析时，能力即未获证明：不要运行带该选项的 search，不得删掉选项静默降级、猜测替代参数或重搜；明确报告 CLI 未声明/无法确认该选项，不能声称该过滤/预算已生效。Help 是 CLI 的能力声明，不是行为证明或安全保证。支持的只读 search 执行一次，直接使用原始完整结果，包括 query/options、filters、coverage，不重复搜索来验证或重新提取结果；若请求 `--type`/`--status`，还须核对结果 JSON 回显的 filters 与请求完全一致，否则把过滤结果标为未验证，不重跑。`--budget-bytes` 只涉及其明确契约范围，不得称为完整 stdout 硬上限。对写操作不运行破坏性探测；实际命令若返回不支持/参数不兼容等错误，应如实诊断，不得将 status、help 或入口存在宣称为写操作兼容/安全，也不得将其作为授权。
+Helper 只对既有项目 CLI 运行 `status --json`，另只读提取 Skill 随附用户 CLI 的静态版本声明作为可选提示，不运行该 CLI、不联网、不重复 status 或知识扫描；要求 status 返回绝对 `project` 路径且其 realpath 与目标 realpath 相同；status 成功仅验证项目选择，不证明任何任务命令兼容。相对、缺失、不可解析或不匹配的路径均停止。预检后，Agent 在相同真实 cwd/env 直接执行实际任务所需的命令。若只读操作（例如 `search`）需要任何 CLI options，先在同一真实 cwd/env 只读运行 `node .ake/tools/scripts/ake.mjs --help`，并检查该 CLI 当前 `search` usage 是否精确声明本次每个所需 flag 及值形态（例如 `--status STATUS`、`--budget-bytes N`、`--type TYPE`、`--limit N`、`--json`）。不同版本的 help 文字差异本身不单独判失败；但所需参数缺失、help 失败/不可读/无法解析时，能力即未获证明：不要运行带该选项的 search，不得删掉选项静默降级、猜测替代参数或重搜；明确报告 CLI 未声明/无法确认该选项，不能声称该过滤/预算已生效。Help 是 CLI 的能力声明，不是行为证明或安全保证。支持的只读 search 执行一次，直接使用原始完整结果，包括 query/options、filters、coverage，不重复搜索来验证或重新提取结果；若请求 `--type`/`--status`，还须核对结果 JSON 回显的 filters 与请求完全一致，否则把过滤结果标为未验证，不重跑。`--budget-bytes` 只涉及其明确契约范围，不得称为完整 stdout 硬上限。对写操作不运行破坏性探测；实际命令若返回不支持/参数不兼容等错误，应如实诊断，不得将 status、help 或入口存在宣称为写操作兼容/安全，也不得将其作为授权。
+
+`VERSION_ADVISORY` 分别报告 Skill bundle、随附用户 CLI、项目 CLI 自报版本和项目 config 版本；这四者不可互相推断，旧 CLI 没有自报字段时为 unknown。仅比较明确的稳定三段版本；预发布、无效或未知版本不比较。版本声明不是身份认证，也不证明能力兼容。`comparison` 为 `user-newer` 时，在本 Session 中按 canonical 项目路径和两个 CLI 版本作为去重键，同一差异只提示一次：提供“现在升级（先备份和人工审阅差异）”与“暂不升级”两个选项；不要等选择才继续不依赖升级的原任务，也不要在选择之前写项目。仅用户明确选择现在升级后进入现有人工备份、差异审阅与安全升级流程；该选择不授权自动覆盖、知识数据修改或绕过另需的确认。拒绝、跳过、无答复均不升级。`unknown` 只建议人工检查，不猜版本或阻塞任务。去重依赖 Agent 会话上下文，是软流程，不是宿主强制或持久化保证；Agent Teams 由 Lead 统一提示。
 
 实际操作沿用核验时的真实 cwd/env；仅在 cwd、环境、目标项目配置/CLI 或相关上下文发生变化后重做身份核验，不要求每条写命令前都重复扫描。Preflight 会运行项目已有 CLI，不能保证无副作用或认证 CLI 身份。若 DSH 宿主、系统策略或权限拒绝 helper/子进程，立即停止，不得通过 Node/bash 包装器、MCP 或其他执行路径绕过。Bootstrap 遇到既有配置/CLI只保留现状；若报告项目根不符或部分初始化，先备份并人工审阅迁移/合并方案，禁止自动复制、升级或覆盖项目文件。
 

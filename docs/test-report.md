@@ -210,6 +210,8 @@ Environment: macOS, Node `v26.13.0`, npm `11.20.0`, Git `2.56.0`.
 
 ## Authorized amendment — built-in help, installation status and self-update
 
+**Historical record:** The following observations describe the implementation at that time. References to automatic rollback and cached/PATH CLI acquisition are historical, not the current update contract. The present implementation retains live state and backup without automatic recovery after the installer may start; see the latest amendment below.
+
 Environment: macOS (darwin, arm64), Node `v26.13.0`, npm `11.20.0`, Git `2.56.0`, Vercel Skills CLI `1.8.1` (cached copy), official GitHub remote `https://github.com/Shakyae/agent-knowledge-engine.git` (default branch `master`).
 
 Scope: built-in Chinese help and `/ake` entry routing, additive installation status in `ake status`, `ake update`, and the `ake init` optional-`--dir` wording and semantics tests. The knowledge kinds, file formats, roots, candidate lifecycle and publish gate are unchanged.
@@ -306,3 +308,10 @@ The current AKE host runtime contract is Node.js >=22.20.0. This supersedes the 
 - The test command now uses Node's default test-file discovery (`node --import ./tests/helpers/test-env.mjs --test`) rather than enumerating `.test.mjs` globs. This avoids the Node.js 22.20.0 directory-argument import failure while keeping discovery extensible to Node's supported test filename patterns. A direct default-discovery run found 227 entries: the original 226 test cases plus the preloaded helper file `tests/helpers/test-env.mjs`; none of the original cases were dropped.
 - With the package and generated Skill bundle at 0.2.1, `npm run check` passed on official Node.js v22.20.0 and the available macOS Node.js v26.13.0: 227 total, 223 pass, 0 fail, 4 opt-in skips; bundle check reports 21 synchronized files; project validation reports 0 errors / 0 warnings.
 - CI retains the existing runtime-floor matrix and adds a full-check OS matrix on Node.js 22.20.0 for Ubuntu and Windows. The Windows job is configuration only until the workflow runs; this agent did not run Windows natively or push a candidate commit to trigger CI.
+
+## Direct update maintenance-window amendment (2026-11-26)
+
+- On macOS arm64 with Node v26.13.0, `AKE_RUN_REAL_SKILLS_CLI_TEST=1 AKE_RUN_REAL_GITHUB_STAGE_TEST=1 node --import ./tests/helpers/test-env.mjs --test --test-name-pattern='real Skills CLI 1.8.1 CodeBuddy|real pinned GitHub Claude|real Skills CLI 1.8.1 copy' tests/integration/update-flow.test.mjs` passed **3/3**, no skips. Isolated HOME tests covered real Skills CLI 1.8.1 agent combinations and copy behavior; the current `runUpdate` called the real CLI with Claude+CodeBuddy to move official commit `450d2a7` to `96ad9ce`, verifying backup, tree, links and lock. That test injects the real CLI and remote resolution into `runUpdate`; it is not a full production CLI-acquisition-path test.
+- After raw symlink-text comparison was added, `AKE_RUN_REAL_GITHUB_STAGE_TEST=1 node --import ./tests/helpers/test-env.mjs --test --test-name-pattern='real pinned GitHub Claude' tests/integration/update-flow.test.mjs` passed **1/1**, no skips, in isolated HOME. It does not establish link inode stability.
+- Final `npm run check` on macOS arm64 / Node v26.13.0: **252 tests, 246 pass, 0 fail, 6 opt-in skips**; bundle check **21 files**, project validation **0 errors / 0 warnings**. Skipped tests are not counted as passed.
+- The default suite uses simulated installer failures, copy fallback, concurrent drift and startup failure to check that live state and backup remain and no automatic restore or backup cleanup occurs. The user is responsible for stopping other AKE writers; in-place replacement is not a transaction. Native Windows, Linux, network volumes, forced real CLI symlink failures, crash recovery and real DSH reload were not verified in this run. Historical Windows CI and earlier observations above are not results from this run.

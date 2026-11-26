@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import path from 'node:path';
-import { lstat, readdir, readFile, writeFile, mkdir, copyFile, symlink, readlink, chmod, unlink, rmdir, open } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath, writeFile, mkdir, copyFile, symlink, readlink, chmod, unlink, rmdir, open } from 'node:fs/promises';
 
 const MARKER = 'ake-skill-backup';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -159,10 +159,10 @@ async function validateBackupEntries(directory) {
   const marker = JSON.parse(await readFile(manifestPath, 'utf8'));
   if (marker.format !== MARKER || marker.schemaVersion !== 1 || !Array.isArray(marker.entries) || !marker.backupId || !Number.isFinite(Date.parse(marker.createdAt)) || new Date(marker.createdAt).toISOString() !== marker.createdAt) throw new Error('invalid AKE backup manifest');
   if (!path.isAbsolute(marker.agentsHome ?? '') || !path.isAbsolute(marker.loadPath ?? '') || marker.canonicalPath !== path.join(marker.agentsHome, 'skills', 'ake') || marker.originalPath !== marker.canonicalPath || marker.lockPath !== path.join(marker.agentsHome, '.skill-lock.json') || !['user'].includes(marker.scope) || marker.mode !== 'canonical') throw new Error('backup paths do not match the canonical AKE layout');
-  const allowedLinks = new Set([marker.canonicalPath, path.join(path.dirname(marker.agentsHome), '.claude', 'skills', 'ake')]);
-  if (!Array.isArray(marker.agentLinks) || marker.agentLinks.some(item => !allowedLinks.has(item.path) || typeof item.existed !== 'boolean' || (item.existed && !['symlink', 'directory', 'file'].includes(item.type)) || (!item.existed && (item.type !== null || item.linkTarget !== null)))) throw new Error('backup contains an unsupported agent path');
-  const allowedSkillsDirectories = new Set([path.join(marker.agentsHome, 'skills'), path.join(path.dirname(marker.agentsHome), '.claude', 'skills'), path.join(path.dirname(marker.agentsHome), '.claude')]);
-  if (!Array.isArray(marker.skillsDirectories) || marker.skillsDirectories.some(item => !allowedSkillsDirectories.has(item.path) || (item.existed ? !Array.isArray(item.entries) : item.entries !== null))) throw new Error('backup contains invalid skills directory snapshots');
+  const allowedLinks = new Set([marker.canonicalPath, ...['.claude', '.codebuddy'].map(agent => path.join(path.dirname(marker.agentsHome), agent, 'skills', 'ake'))]);
+  if (!Array.isArray(marker.agentLinks) || new Set(marker.agentLinks.map(item => item.path)).size !== marker.agentLinks.length || marker.agentLinks.some(item => !allowedLinks.has(item.path) || typeof item.existed !== 'boolean' || (item.existed && (!['symlink', 'directory', 'file'].includes(item.type) || (item.type === 'symlink' ? typeof item.linkTarget !== 'string' || !item.linkTarget || item.linkTarget.includes('\0') : item.linkTarget !== null))) || (!item.existed && (item.type !== null || item.linkTarget !== null)))) throw new Error('backup contains an unsupported agent path');
+  const allowedSkillsDirectories = new Set([path.join(marker.agentsHome, 'skills'), ...['.claude', '.codebuddy'].flatMap(agent => [path.join(path.dirname(marker.agentsHome), agent, 'skills'), path.join(path.dirname(marker.agentsHome), agent)])]);
+  if (!Array.isArray(marker.skillsDirectories) || new Set(marker.skillsDirectories.map(item => item.path)).size !== marker.skillsDirectories.length || marker.skillsDirectories.some(item => !allowedSkillsDirectories.has(item.path) || typeof item.existed !== 'boolean' || (item.existed ? !Array.isArray(item.entries) || new Set(item.entries).size !== item.entries.length || item.entries.some(name => typeof name !== 'string' || !name || name === '.' || name === '..' || /[\\/\0]/.test(name)) : item.entries !== null))) throw new Error('backup contains invalid skills directory snapshots');
   if (path.basename(directory) !== marker.backupId || !marker.entries.some(item => item.relativePath === 'canonical' && item.type === 'directory') || Boolean(marker.entries.some(item => item.relativePath === 'lock.json' && item.type === 'file')) !== marker.lockExisted || marker.entries.some(item => item.relativePath.startsWith('lock.json/'))) throw new Error('backup identity or required entries are inconsistent');
   const canonicalLink = marker.agentLinks.find(item => item.path === marker.canonicalPath);
   if (!canonicalLink?.existed || canonicalLink.type !== 'directory') throw new Error('backup does not record the canonical directory');
@@ -206,7 +206,7 @@ export async function validateBackup(directory) {
 async function snapshotSkillsDirectories(agentsHome) {
   const claudePath = path.join(path.dirname(agentsHome), '.claude', 'skills');
   const snapshots = [];
-  for (const directoryPath of [path.join(agentsHome, 'skills'), claudePath, path.dirname(claudePath)]) {
+  for (const directoryPath of [path.join(agentsHome, 'skills'), claudePath, path.dirname(claudePath), path.join(path.dirname(agentsHome), '.codebuddy', 'skills'), path.join(path.dirname(agentsHome), '.codebuddy')]) {
     const info = await exists(directoryPath);
     if (info && (!info.isDirectory() || info.isSymbolicLink())) throw Object.assign(new Error(`unsafe agent skills directory: ${directoryPath}`), { code: 'BACKUP' });
     snapshots.push({ path: directoryPath, existed: Boolean(info), entries: info ? (await readdir(directoryPath)).sort() : null });
@@ -222,6 +222,45 @@ async function snapshotAgentLinks(paths) {
   return snapshots;
 }
 
+export function rollbackAnchorIdentity(info) {
+  const fields = ['dev', 'ino', 'birthtimeNs'];
+  if (fields.some(key => typeof info?.[key] !== 'bigint' || info[key] <= 0n)) throw new Error('rollback ancestor identity is unavailable or unreliable');
+  return Object.fromEntries(fields.map(key => [key, info[key].toString()]));
+}
+
+async function captureRollbackAnchors(agentsHome) {
+  const home = path.dirname(agentsHome);
+  const paths = [home, agentsHome, path.join(agentsHome, 'skills'), path.join(agentsHome, 'ake'), path.join(agentsHome, 'ake', 'backups')];
+  const optionalPaths = ['.claude', '.codebuddy'].flatMap(agent => [path.join(home, agent), path.join(home, agent, 'skills')]);
+  const anchors = [];
+  for (const directory of [...paths, ...optionalPaths]) {
+    let info;
+    try { info = await lstat(directory, { bigint: true }); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (!info && optionalPaths.includes(directory)) { anchors.push({ path: directory, exists: false }); continue; }
+    if (!info?.isDirectory() || info.isSymbolicLink()) throw new Error(`unsafe rollback ancestor: ${directory}`);
+    let identity;
+    try { identity = rollbackAnchorIdentity(info); }
+    catch (error) { throw new Error(`cannot verify rollback ancestor identity: ${directory}: ${error.message}`); }
+    anchors.push({ path: directory, exists: true, realPath: await realpath(directory), ...identity });
+  }
+  return anchors;
+}
+
+export async function verifyRollbackAnchors(backup) {
+  const agentsHome = backup.manifest?.agentsHome;
+  if (!path.isAbsolute(agentsHome ?? '') || !Array.isArray(backup.anchors)) throw new Error('rollback ancestor identity is unavailable');
+  const current = await captureRollbackAnchors(agentsHome);
+  if (JSON.stringify(current) !== JSON.stringify(backup.anchors)) {
+    const changed = current.filter((item, index) => JSON.stringify(item) !== JSON.stringify(backup.anchors[index])).map(item => item.path);
+    throw new Error(`rollback ancestor identity changed: ${changed.join(', ') || agentsHome}`);
+  }
+  const backupPath = backup.backupPath, expected = backup.backupIdentity;
+  if (!path.isAbsolute(backupPath ?? '') || !expected || path.dirname(backupPath) !== path.join(agentsHome, 'ake', 'backups')) throw new Error('backup directory identity is unavailable');
+  const info = await lstat(backupPath, { bigint: true });
+  if (!info.isDirectory() || info.isSymbolicLink() || JSON.stringify(rollbackAnchorIdentity(info)) !== JSON.stringify(expected.identity) || await realpath(backupPath) !== expected.realPath) throw new Error(`backup directory identity changed: ${backupPath}`);
+}
+
 export async function createBackup({ agentsHome, installation, lockPath, targetCommit }) {
   const canonicalPath = installation.canonicalPath;
   const lockInfo = await exists(lockPath);
@@ -234,16 +273,23 @@ export async function createBackup({ agentsHome, installation, lockPath, targetC
   const entries = [{ relativePath: 'canonical', type: 'directory', mode: rootMode, sha256: null, linkTarget: null }, ...tree.map(entry => ({ ...entry, relativePath: `canonical/${entry.relativePath}` }))];
   if (lockBytes) entries.push({ relativePath: 'lock.json', type: 'file', mode: 0o600, sha256: sha256(lockBytes), linkTarget: null });
   const claudePath = path.join(path.dirname(agentsHome), '.claude', 'skills', 'ake');
-  const linkPaths = [...new Set([canonicalPath, claudePath, ...(installation.agentPaths ?? []).map(item => item.path)])];
+  const buddyPath = path.join(path.dirname(agentsHome), '.codebuddy', 'skills', 'ake');
+  const linkPaths = [...new Set([canonicalPath, claudePath, buddyPath, ...(installation.agentPaths ?? []).map(item => item.path)])];
   const skillsDirectories = await snapshotSkillsDirectories(agentsHome);
   const agentLinks = await snapshotAgentLinks(linkPaths);
   const backupId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(6).toString('hex')}`;
   await ensureDirectory(agentsHome);
   const updateDirectory = path.join(agentsHome, 'ake'); await ensureDirectory(updateDirectory, { create: true });
   const root = path.join(updateDirectory, 'backups'); await ensureDirectory(root, { create: true });
+  let anchors;
+  try { anchors = await captureRollbackAnchors(agentsHome); }
+  catch (error) { throw Object.assign(new Error(`backup ancestor verification failed: ${error.message}; management directories may already exist`), { code: 'BACKUP', cause: error }); }
   const directory = path.join(root, backupId);
   await mkdir(directory, { mode: 0o700 });
   try {
+    const info = await lstat(directory, { bigint: true });
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('unsafe backup directory');
+    const backupIdentity = { identity: rollbackAnchorIdentity(info), realPath: await realpath(directory) };
     await mkdir(path.join(directory, 'data'));
     await copyTree(canonicalPath, path.join(directory, 'data', 'canonical'), tree, rootMode);
     if (lockBytes) { await writeFile(path.join(directory, 'data', 'lock.json'), lockBytes, { mode: 0o600 }); }
@@ -257,19 +303,54 @@ export async function createBackup({ agentsHome, installation, lockPath, targetC
     const linksAfter = await snapshotAgentLinks(linkPaths);
     const skillsAfter = await snapshotSkillsDirectories(agentsHome);
     if (JSON.stringify(tree) !== JSON.stringify(after) || !Buffer.from(lockBytes ?? []).equals(Buffer.from(lockAfter ?? [])) || JSON.stringify(agentLinks) !== JSON.stringify(linksAfter) || JSON.stringify(skillsDirectories) !== JSON.stringify(skillsAfter)) throw new Error('installation/lock/agent paths changed during backup');
-    return { backupPath: directory, manifest, originalLockBytes: lockBytes, originalTree: tree };
+    await verifyRollbackAnchors({ backupPath: directory, backupIdentity, manifest, anchors });
+    return { backupPath: directory, backupIdentity, manifest, originalLockBytes: lockBytes, originalTree: tree, anchors };
   } catch (error) {
     throw Object.assign(new Error(`backup creation/verification failed: ${error.message}`), { code: 'BACKUP' });
   }
 }
 
+async function inspectRollbackConflicts(manifest, root) {
+  const conflicts = [];
+  const rootInfo = await exists(root);
+  if (rootInfo && (!rootInfo.isDirectory() || rootInfo.isSymbolicLink())) conflicts.push(root);
+  else if (rootInfo) {
+    const expected = new Map(manifest.entries.filter(entry => entry.relativePath.startsWith('canonical/')).map(entry => [entry.relativePath.slice('canonical/'.length), entry.type]));
+    for (const entry of await snapshotTree(root)) {
+      if (!expected.has(entry.relativePath) || expected.get(entry.relativePath) !== entry.type) conflicts.push(path.join(root, ...entry.relativePath.split('/')));
+    }
+  }
+  for (const link of manifest.agentLinks) {
+    if (link.path === root) continue;
+    const current = await exists(link.path);
+    if (!current) continue; // A missing snapshotted symlink can be recreated.
+    if (!link.existed || link.type !== 'symlink' || !current.isSymbolicLink() || await readlink(link.path) !== link.linkTarget) conflicts.push(link.path);
+  }
+  for (const snapshot of manifest.skillsDirectories) {
+    const current = await exists(snapshot.path);
+    if (!current) { if (snapshot.existed) conflicts.push(snapshot.path); continue; }
+    if (!current.isDirectory() || current.isSymbolicLink()) { conflicts.push(snapshot.path); continue; }
+    if (!snapshot.existed) { conflicts.push(snapshot.path); continue; }
+    const names = await readdir(snapshot.path);
+    for (const name of names) if (!snapshot.entries.includes(name)) conflicts.push(path.join(snapshot.path, name));
+    for (const name of snapshot.entries) {
+      const item = path.join(snapshot.path, name);
+      if (!names.includes(name) && !manifest.agentLinks.some(link => link.path === item && link.existed && link.type === 'symlink')) conflicts.push(item);
+    }
+  }
+  return [...new Set(conflicts)].sort();
+}
+
 export async function restoreBackup(backup, { lockPath = backup.manifest.lockPath } = {}) {
+  try { await verifyRollbackAnchors(backup); }
+  catch (error) { throw Object.assign(new Error(`rollback refused before backup access: ${error.message}`), { code: 'ROLLBACK_FAILED', cause: error }); }
   const manifest = await validateBackup(backup.backupPath);
   const root = manifest.canonicalPath;
+  if (lockPath !== manifest.lockPath) throw Object.assign(new Error(`rollback lock path differs from backup: ${lockPath}`), { code: 'ROLLBACK_FAILED' });
   const liveRoot = await exists(root);
-  if (liveRoot && (!liveRoot.isDirectory() || liveRoot.isSymbolicLink())) throw new Error('canonical path is not a real directory; refusing unsafe restore');
+  if (liveRoot && (!liveRoot.isDirectory() || liveRoot.isSymbolicLink())) throw Object.assign(new Error(`canonical path is not a real directory; refusing unsafe restore: ${root}`), { code: 'ROLLBACK_FAILED' });
   const currentInfo = await exists(lockPath);
-  if (currentInfo && (!currentInfo.isFile() || currentInfo.isSymbolicLink())) throw new Error('current lock is not a regular file; refusing unsafe restore');
+  if (currentInfo && (!currentInfo.isFile() || currentInfo.isSymbolicLink())) throw Object.assign(new Error(`current lock is not a regular file; refusing unsafe restore: ${lockPath}`), { code: 'ROLLBACK_FAILED' });
   const currentLock = currentInfo ? await readFile(lockPath) : null;
   const lockDrift = [];
   if (manifest.lockExisted && currentLock) {
@@ -291,6 +372,15 @@ export async function restoreBackup(backup, { lockPath = backup.manifest.lockPat
     }
   } else if (manifest.lockExisted) lockDrift.push('lock (disappeared after backup)');
   else if (currentLock) lockDrift.push('lock (appeared after initially absent snapshot)');
+
+  let conflicts;
+  try { conflicts = await inspectRollbackConflicts(manifest, root); }
+  catch (error) { throw Object.assign(new Error(`rollback preflight could not inspect state: ${error.message}`), { code: 'ROLLBACK_FAILED', cause: error }); }
+  if (lockDrift.length || conflicts.length) {
+    const details = [...lockDrift.map(item => `${lockPath}: ${item}`), ...conflicts];
+    const warning = `回滚预检拒绝写入；保留现场及备份，请人工检查：${details.join(', ')}`;
+    throw Object.assign(new Error(warning), { code: 'ROLLBACK_FAILED', warnings: [warning] });
+  }
 
   const canonicalRestore = await restoreCanonicalSnapshot(path.join(backup.backupPath, 'data'), root, manifest.entries);
   const nonSnapshotPaths = [...canonicalRestore.preservedPaths];

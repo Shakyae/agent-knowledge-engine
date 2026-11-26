@@ -101,7 +101,7 @@ export async function readInstallation({ entry = fileURLToPath(import.meta.url),
   let agentPaths = null;
   if (canonicalInfo?.mode === 'canonical') {
     agentPaths = [{ path: userCanonical, mode: 'canonical' }];
-    for (const candidate of [path.join(home, '.claude', 'skills', 'ake')]) {
+    for (const candidate of [path.join(home, '.claude', 'skills', 'ake'), path.join(home, '.codebuddy', 'skills', 'ake')]) {
       const linked = await classify(candidate);
       if (linked?.mode === 'symlink' && linked.canonical === canonicalInfo.canonical) agentPaths.push({ path: candidate, mode: 'symlink' });
     }

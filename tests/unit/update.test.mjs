@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseUpdateArgs, resolveInstallSource, updateExitCode, runUpdate, detectCustomization, resolveInstallation, verifyInstalled } from '../../src/lib/update.mjs';
+import { parseUpdateArgs, resolveInstallSource, updateExitCode, runUpdate, runProductionUpdate, detectCustomization, resolveInstallation, verifyInstalled } from '../../src/lib/update.mjs';
 import { mkdir, writeFile, readFile, readdir, lstat, rm, symlink, cp, chmod } from 'node:fs/promises';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { runGit, resolveRemote } from '../../src/lib/git-remote.mjs';
 import { assertOutsideGitWorkTree, cleanTestEnv, tempRoot } from '../helpers/test-env.mjs';
@@ -26,6 +26,13 @@ test('Windows npm resolution accepts copied Path and rejects missing candidates'
   const env = { Path: root, PathExt: '.CMD' };
   assert.deepEqual(await resolveWindowsCli('npm', { env }), { command: process.execPath, prefix: [await realpath(cli)] });
   assert.equal(await resolveWindowsCli('npm', { env: { Path: path.join(root, 'missing'), PathExt: '.CMD' } }), null);
+});
+
+test('production update entry rejects injected dependency objects before work', async () => {
+  let called = false;
+  await assert.rejects(runProductionUpdate({ argv: [], resolveRemote: () => { called = true; } }), { code: 'USAGE' });
+  await assert.rejects(runProductionUpdate(['--force']), { code: 'USAGE' });
+  assert.equal(called, false);
 });
 
 test('update arguments are allowlisted and duplicates rejected', () => {
@@ -229,7 +236,7 @@ test('dry-run plans but never locks, backs up, or installs', async () => {
   assert.equal(result.status, 'dry_run'); assert.equal(locked || backed || installed, false);
 });
 
-test('custom/unknown local state refuses by default and install error invokes rollback', async t => {
+test('modified state needs opt-in and install failure never invokes rollback', async t => {
   const { root, home, agentsHome, lockPath, tempRoot } = await updateRoots(t, 'ake-update-customized-');
   const installation = { agentsHome, lockPath, agentPaths: [], lock: { skills: { ake: { ref: sha } } } };
   let rollback = false, installArgs, installReached = false;
@@ -241,8 +248,32 @@ test('custom/unknown local state refuses by default and install error invokes ro
   const accepted = await runUpdate({ ...base, flags: { ...base.flags, acceptCustomized: true }, detectCustomization: async () => 'clean', createBackup: async () => ({ backupPath: path.join(root, 'backup'), manifest: {}, originalTree: [], originalLockBytes: null }),
     runSkillsAdd: async (_cmd, args) => { installReached = true; installArgs = args; throw Object.assign(new Error('stub partial failure'), { code: 'INSTALL' }); },
     restoreBackup: async () => { rollback = true; }, verifyInstalled: async () => {} });
-  assert.equal(accepted.errorCode, 'INSTALL'); assert.equal(accepted.rollback, 'succeeded'); assert.equal(rollback, true); assert.equal(installReached, true);
+  assert.equal(accepted.errorCode, 'INSTALL'); assert.equal(accepted.rollback, 'not_attempted'); assert.equal(rollback, false); assert.equal(installReached, true);
   assert.ok(installArgs.includes(`o/r@${'b'.repeat(40)}`)); assert.ok(installArgs.includes('--skill')); assert.ok(installArgs.includes('ake')); assert.equal(installArgs.includes('--copy'), false);
+});
+
+test('CodeBuddy topology appearing after lock refuses before acquisition and releases lock', async () => {
+  const agentsHome = '/fake/.agents', canonical = '/fake/.agents/skills/ake';
+  const before = { agentsHome, agentPaths: [{ path: canonical, mode: 'canonical' }], lock: { skills: { ake: { sourceType: 'local' } } } };
+  const after = { ...before, agentPaths: [...before.agentPaths, { path: '/fake/.claude/skills/ake', mode: 'symlink' }, { path: '/fake/.codebuddy/skills/ake', mode: 'symlink' }] };
+  let calls = 0, released = false, acquired = false, backed = false, installed = false;
+  const result = await runUpdate({ flags: { dryRun: false, json: true, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    resolveInstallation: async () => ++calls === 1 ? before : after,
+    resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'b'.repeat(40), entries: [] }),
+    acquireLock: async () => ({ release: async () => { released = true; } }), acquireSkillsCli: async () => { acquired = true; },
+    createBackup: async () => { backed = true; }, runSkillsAdd: async () => { installed = true; } });
+  assert.equal(calls, 2); assert.equal(result.errorCode, 'DRIFT'); assert.match(result.message, /changed while acquiring/);
+  assert.equal(released, true); assert.equal(acquired || backed || installed, false);
+});
+
+test('CodeBuddy up-to-date result does not write', async () => {
+  const agentsHome = '/fake/.agents', targetCommit = 'b'.repeat(40);
+  const installation = { agentsHome, agentPaths: [{ path: '/fake/.codebuddy/skills/ake', mode: 'symlink' }], lock: { skills: { ake: { sourceType: 'github', ref: targetCommit } } } };
+  let locked = false;
+  const result = await runUpdate({ flags: { dryRun: false, json: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
+    resolveInstallation: async () => installation, resolveRemote: async () => ({ targetCommit, sourceUrl: 'https://github.com/o/r.git', repo: 'o/r' }),
+    isCurrent: async () => true, acquireLock: async () => { locked = true; } });
+  assert.equal(result.status, 'up_to_date'); assert.equal(locked, false);
 });
 
 test('copy-mode lock with an existing agent symlink refuses before acquisition or backup', async () => {
@@ -257,12 +288,57 @@ test('copy-mode lock with an existing agent symlink refuses before acquisition o
 test('Windows Skills environment overrides all inherited profile and npm paths', async () => {
   const { makeSkillsEnvironment } = await import('../../src/lib/update.mjs');
   const target = 'C:\\Users\\ake-target', temp = 'C:\\Temp\\ake-work';
-  const env = makeSkillsEnvironment({ HOME: 'C:\\Users\\attacker', USERPROFILE: 'C:\\Users\\attacker', APPDATA: 'C:\\Users\\attacker\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\attacker\\AppData\\Local', HOMEDRIVE: 'D:', HOMEPATH: '\\attacker', NPM_CONFIG_CACHE: 'C:\\Users\\attacker\\.npm' }, target, temp, 'win32');
+  const env = makeSkillsEnvironment({ HOME: 'C:\\Users\\attacker', USERPROFILE: 'C:\\Users\\attacker', APPDATA: 'C:\\Users\\attacker\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\attacker\\AppData\\Local', HOMEDRIVE: 'D:', HOMEPATH: '\\attacker', NPM_CONFIG_CACHE: 'C:\\Users\\attacker\\.npm', CLAUDE_CONFIG_DIR: 'C:\\Users\\attacker\\claude' }, target, temp, 'win32');
+  assert.equal(env.CLAUDE_CONFIG_DIR, undefined);
   assert.equal(env.HOME, target); assert.equal(env.USERPROFILE, target);
   assert.equal(env.APPDATA, path.win32.join(target, 'AppData', 'Roaming')); assert.equal(env.LOCALAPPDATA, path.win32.join(target, 'AppData', 'Local'));
   assert.equal(env.HOMEDRIVE, 'C:'); assert.equal(env.HOMEPATH, '\\Users\\ake-target');
   assert.equal(env.npm_config_cache, path.join(temp, 'cache')); assert.equal(env.npm_config_logs_dir, path.join(temp, 'logs'));
   assert.equal(Object.keys(env).some(key => key.toLowerCase() === 'npm_config_cache' && env[key] === 'C:\\Users\\attacker\\.npm'), false);
+});
+
+test('nonempty agent path overrides refuse before identity or network without touching paths', async t => {
+  const root = await makeWorkDir('ake-agent-overrides-'); t.after(() => rm(root, { recursive: true, force: true }));
+  const outside = path.join(root, 'outside'), link = path.join(root, 'link'), missing = path.join(root, 'missing');
+  await mkdir(outside); await writeFile(path.join(outside, 'SKILL.md'), 'external customization'); await symlink(outside, link);
+  const entries = await readdir(root), keys = ['claude_config_dir', 'CODEX_HOME', 'VIBE_HOME', 'HERMES_HOME', 'AUTOHAND_HOME', 'GROK_HOME', 'SARVAM_HOME', 'REASONIX_HOME', 'FLATPAK_XDG_CONFIG_HOME', 'XDG_CONFIG_HOME'];
+  for (const key of keys) for (const value of [outside, link, missing, path.join(root, '.config'), path.join(root, '.claude')]) {
+    let called = false;
+    const result = await runUpdate({ flags: { dryRun: true, json: true }, package: { repository: { url: 'https://github.com/o/r.git' } }, env: { [key]: value }, installationOptions: { env: {} },
+      resolveInstallation: async () => { called = true; }, resolveRemote: async () => { called = true; }, acquireLock: async () => { called = true; },
+      createBackup: async () => { called = true; }, acquireSkillsCli: async () => { called = true; }, runSkillsAdd: async () => { called = true; } });
+    assert.equal(result.errorCode, 'IDENTITY_AMBIGUOUS'); assert.ok(result.message.includes(key)); assert.equal(called, false);
+    assert.equal(await readFile(path.join(outside, 'SKILL.md'), 'utf8'), 'external customization'); assert.deepEqual(await readdir(root), entries);
+    assert.equal((await lstat(link)).isSymbolicLink(), true);
+  }
+  let called = false;
+  const alternate = await runUpdate({ flags: { dryRun: true, json: true }, package: { repository: { url: 'https://github.com/o/r.git' } }, env: {}, installationOptions: { env: { CODEX_HOME: outside } }, resolveInstallation: async () => { called = true; } });
+  assert.equal(alternate.errorCode, 'IDENTITY_AMBIGUOUS'); assert.equal(called, false);
+  let identityOrRemote = false;
+  const whitespace = await runUpdate({ flags: { dryRun: false, json: true }, package: { repository: { url: 'https://github.com/o/r.git' } }, env: { CODEX_HOME: '  ' }, installationOptions: { env: {} },
+    resolveInstallation: async () => { identityOrRemote = true; }, resolveRemote: async () => { identityOrRemote = true; } });
+  assert.equal(whitespace.errorCode, 'IDENTITY_AMBIGUOUS'); assert.match(whitespace.message, /CODEX_HOME/); assert.equal(identityOrRemote, false);
+  const empty = await runUpdate({ flags: { dryRun: true, json: true }, package: { repository: { url: 'https://github.com/o/r.git' } }, env: { CODEX_HOME: '' }, installationOptions: { env: {} },
+    resolveInstallation: async () => ({ agentsHome: path.join(root, '.agents'), agentPaths: [], lock: {} }),
+    resolveRemote: async () => ({ targetCommit: 'b'.repeat(40), sourceUrl: 'https://github.com/o/r.git', repo: 'o/r' }) });
+  assert.equal(empty.status, 'dry_run', JSON.stringify(empty));
+});
+
+test('default process environment overrides refuse without identity or remote work', () => {
+  const moduleUrl = new URL('../../src/lib/update.mjs', import.meta.url).href;
+  const script = `import {runUpdate} from ${JSON.stringify(moduleUrl)}; let called=false; const result=await runUpdate({flags:{dryRun:false,json:true},package:{repository:{url:'https://github.com/o/r.git'}},resolveInstallation:async()=>{called=true},resolveRemote:async()=>{called=true}}); console.log(JSON.stringify({result,called}));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: cleanTestEnv({ CODEX_HOME: ' ' }) });
+  assert.equal(child.status, 0, child.stderr);
+  const { result, called } = JSON.parse(child.stdout);
+  assert.equal(result.errorCode, 'IDENTITY_AMBIGUOUS'); assert.match(result.message, /CODEX_HOME/); assert.equal(called, false);
+});
+
+test('Skills environment removes inherited agent-specific home overrides', async () => {
+  const { makeSkillsEnvironment } = await import('../../src/lib/update.mjs');
+  const keys = ['CODEX_HOME', 'VIBE_HOME', 'HERMES_HOME', 'AUTOHAND_HOME', 'GROK_HOME', 'SARVAM_HOME', 'REASONIX_HOME', 'FLATPAK_XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR'];
+  const input = Object.fromEntries(keys.map(key => [key.toLowerCase(), '/outside-target']));
+  const result = makeSkillsEnvironment(input, '/target', '/tmp/isolated');
+  for (const key of keys) assert.equal(result[key.toLowerCase()], undefined, key);
 });
 
 test('verified installation home overrides caller HOME and inherited Windows profile paths', async t => {
@@ -304,16 +380,16 @@ test('latest verified installation short-circuits without CLI, npm, lock, or bac
   assert.equal(result.status, 'up_to_date'); assert.equal(touched || probed || acquired, false);
 });
 
-test('rollback failure is surfaced and backup path retained', async t => {
+test('synchronous installer launch failure retains backup without rollback or cleanup', async t => {
   const { home, agentsHome, lockPath, tempRoot, root } = await updateRoots(t, 'ake-update-rollback-');
-  let installReached = false, rollbackReached = false;
+  let installReached = false, rollbackReached = false, cleanupReached = false;
   const result = await runUpdate({ home, tempRoot, probeSkillsCli: async () => {}, flags: { dryRun: false, json: false, acceptCustomized: true }, package: { repository: { url: 'https://github.com/o/r.git' } },
     resolveInstallation: async () => ({ agentsHome, lockPath, lock: { skills: { ake: { ref: sha } } }, agentPaths: [] }),
     resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: 'b'.repeat(40), entries: [] }),
     acquireLock: async () => ({ release: async () => {} }), detectCustomization: async () => 'clean', snapshotInstallEffects: async () => 'baseline', createBackup: async () => ({ backupPath: path.join(root, 'keep-backup'), manifest: {}, originalTree: [], originalLockBytes: null }),
-    runSkillsAdd: async () => { installReached = true; throw new Error('install broke'); }, restoreBackup: async () => { rollbackReached = true; throw new Error('restore broken'); } });
-  assert.equal(result.errorCode, 'ROLLBACK_FAILED'); assert.equal(result.backupPath, path.join(root, 'keep-backup')); assert.equal(result.rollback, 'failed');
-  assert.equal(installReached, true); assert.equal(rollbackReached, true);
+    runSkillsAdd: () => { installReached = true; throw Object.assign(new Error('spawn failed synchronously'), { code: 'ENOENT' }); }, restoreBackup: async () => { rollbackReached = true; }, cleanupBackups: async () => { cleanupReached = true; } });
+  assert.equal(result.errorCode, 'INSTALL'); assert.equal(result.backupPath, path.join(root, 'keep-backup')); assert.equal(result.rollback, 'not_attempted');
+  assert.equal(installReached, true); assert.equal(rollbackReached, false); assert.equal(cleanupReached, false); assert.match(result.warnings.join(' '), /未自动恢复/);
 });
 
 test('pinned acquisition uses an isolated npm prefix and disables lifecycle scripts', async t => {

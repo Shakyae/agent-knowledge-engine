@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import path from 'node:path';
-import { lstatSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -101,6 +101,38 @@ function inspectGitIndependently(target) {
   return { status: report.status, root: report.workTreeRoot };
 }
 
+function stableVersion(value) {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)) return null;
+  const parts = value.split('.').map(Number);
+  return parts.every(Number.isSafeInteger) ? parts : null;
+}
+
+function versionAdvisory(target, projectReport, configPath) {
+  const skillRoot = path.dirname(fileURLToPath(import.meta.url));
+  const sourceRoot = path.join(skillRoot, 'resources', 'ake-source');
+  let bundleVersion = null, configVersion = null, userCliVersion = null;
+  try { const value = JSON.parse(readFileSync(path.join(sourceRoot, 'package.json'), 'utf8')).version; if (typeof value === 'string') bundleVersion = value; } catch {}
+  try { const value = JSON.parse(readFileSync(configPath, 'utf8')).version; if (typeof value === 'string') configVersion = value; } catch {}
+  try {
+    const cli = path.join(sourceRoot, 'scripts', 'ake.mjs');
+    const info = lstatSync(cli);
+    if (info.isFile() && !info.isSymbolicLink() && info.size <= 1024 * 1024) {
+      // Inspect the CLI's literal declaration; never execute it for optional advice.
+      const text = readFileSync(cli, 'utf8');
+      const matches = [...text.matchAll(/^const CLI_VERSION = '([^'\r\n]+)';/gm)];
+      if (matches.length === 1) userCliVersion = matches[0][1];
+    }
+  } catch { /* Version advice is optional and never blocks the original task. */ }
+  const projectCliVersion = typeof projectReport.cliVersion === 'string' ? projectReport.cliVersion : null;
+  const user = stableVersion(userCliVersion), project = stableVersion(projectCliVersion);
+  let comparison = 'unknown';
+  if (user && project) {
+    const firstDifference = user.findIndex((part, index) => part !== project[index]);
+    comparison = firstDifference < 0 ? 'equal' : user[firstDifference] > project[firstDifference] ? 'user-newer' : 'project-newer';
+  }
+  return { project: target, bundleVersion, userCliVersion, projectCliVersion, configVersion, comparison };
+}
+
 function main() {
   const versionError = nodeVersionFailure();
   if (versionError) return fail('NODE_VERSION', versionError);
@@ -179,6 +211,8 @@ function main() {
   }
   if (reportedProject !== target) return fail('PROJECT_MISMATCH', `status resolved to ${reportedProject}, not the requested target ${target}; stop before any write.`);
   console.log(`PROJECT_OK: existing CLI status --json resolved to the requested project ${target}. This verifies project selection only; it does not verify any task command.`);
+  try { console.log(`VERSION_ADVISORY: ${JSON.stringify(versionAdvisory(target, report, configState.path))}`); }
+  catch { /* Advisory failures must not block a verified project selection. */ }
   return 0;
 }
 
