@@ -39,6 +39,26 @@ const syntheticReviewerCases=[
  {id:'TM-pseudo-menu-limited',title:'Tampermonkey menu button and dropdown',claim:'The target page renders the expected button text and background/border; its pseudo-element layers stack as intended; computed styles match the inspected UI; and dropdown interaction behaves as observed.',observations:['button text','background and border','::before/::after layer order','actual computed styles','dropdown interaction'],positiveEvidence:[{level:'B',kind:'current browser inspection + this-session Agent verification + user confirmation',assumption:'Synthetic input only: assume the Agent inspected the actual rendered page, read computed styles, checked pseudo-element stacking, exercised the dropdown, and the user confirmed these observations.',persistedArtifact:null,sessionId:null,eventNumber:null}],negativeEvidence:['No browser was launched and no real page was inspected by this test.','No source code, test log, persistent screenshot, session ID, or event number is included in this synthetic case.'],limitations:['Other pages and unrelated menu topics were not checked and are explicitly out of scope.'],expected:{label:'PASS WITH LIMITATIONS',verdict:'approve'}},
  {id:'TM-pseudo-menu-no-core-evidence',title:'Tampermonkey menu pseudo-element',claim:'The menu item is rendered through a CSS pseudo-element.',positiveEvidence:[],negativeEvidence:['Synthetic case contains no browser observation, source code, test log, user confirmation, readable configuration, or system-state evidence for the core claim.'],limitations:['Core behavior has no basic support.'],expected:{label:'BLOCK',verdict:'request-changes'}},
 ];
+// Synthetic prompt-contract vectors only; no actual reviewer/Agent decision is exercised.
+const evidenceMatrix=[
+ {id:'pending-limited',claim:'Target page button text and border render as inspected.',scope:'That button only; other pages unverified.',evidence:[{level:'B',supports:'button text and border'}],limitationsInBody:['Other pages were not checked; verification remains pending.'],safety:{criticalRequirement:'not applicable',status:'satisfied'},expected:{label:'PASS WITH LIMITATIONS',verdict:'approve'}},
+ {id:'pending-undisclosed',claim:'Target page button text and border render as inspected.',scope:'That button only; other pages unverified.',evidence:[{level:'B',supports:'button text and border'}],limitationsInBody:[],safety:{criticalRequirement:'not applicable',status:'satisfied'},expected:{label:'PASS WITH LIMITATIONS',verdict:'request-changes'}},
+ {id:'sufficient',claim:'Target button text, border, pseudo-element stacking and dropdown behavior match the stated claim.',scope:'The named button and dropdown interactions.',evidence:[{level:'A',supports:'source diff and executed focused test covering each named behavior'}],limitationsInBody:[],safety:{criticalRequirement:'not applicable',status:'satisfied'},expected:{label:'PASS',verdict:'approve'}},
+ {id:'core-c',claim:'Core menu behavior is correct.',scope:'Core menu behavior.',evidence:[{level:'C',supports:'no relevant observation'}],limitationsInBody:[],safety:{criticalRequirement:'not applicable',status:'satisfied'},expected:{label:'BLOCK',verdict:'request-changes'}},
+ {id:'cross-scope-no-evidence',claim:'All pages render the menu correctly.',scope:'All pages.',evidence:[{level:'C',supports:'only one unrelated page checked'}],limitationsInBody:[],safety:{criticalRequirement:'not applicable',status:'satisfied'},expected:{label:'BLOCK',verdict:'request-changes'}},
+ {id:'critical-safety',claim:'Credential-handling operation meets the required security property.',scope:'Credential-handling operation.',evidence:[{level:'B',supports:'partial observation'}],limitationsInBody:[],safety:{criticalRequirement:'required security control',status:'not met'},expected:{label:'BLOCK',verdict:'request-changes'}},
+ {id:'no-id-alone',claim:'Inspected current page renders the stated button behavior.',scope:'Inspected current page only.',evidence:[{level:'B',supports:'direct current-session inspection'}],limitationsInBody:['Other pages not inspected.'],sessionId:null,eventNumber:null,persistedArtifact:null,safety:{criticalRequirement:'not applicable',status:'satisfied'},expected:{label:'PASS WITH LIMITATIONS',verdict:'approve'}},
+];
+test('synthetic evidence matrix maps prompt labels and CLI verdicts without asserting real behavior',async()=>{
+ const skill=await readFile(path.join(root,'skills/ake/SKILL.md'),'utf8');
+ assert.deepEqual(evidenceMatrix.map(x=>[x.expected.label,x.expected.verdict]),[['PASS WITH LIMITATIONS','approve'],['PASS WITH LIMITATIONS','request-changes'],['PASS','approve'],['BLOCK','request-changes'],['BLOCK','request-changes'],['BLOCK','request-changes'],['PASS WITH LIMITATIONS','approve']]);
+ assert.equal(evidenceMatrix[0].evidence[0].level,'B');assert.match(evidenceMatrix[0].limitationsInBody[0],/pending/);
+ assert.deepEqual(evidenceMatrix[1].limitationsInBody,[]);assert.equal(evidenceMatrix[2].evidence[0].level,'A');
+ assert.equal(evidenceMatrix[3].evidence[0].level,'C');assert.equal(evidenceMatrix[4].evidence[0].level,'C');
+ assert.equal(evidenceMatrix[5].safety.status,'not met');
+ assert.equal(evidenceMatrix[6].sessionId,null);assert.equal(evidenceMatrix[6].eventNumber,null);assert.equal(evidenceMatrix[6].persistedArtifact,null);
+ for(const phrase of ['`verified: pending`）本身不自动阻塞','不可用局部验证证明整体','关键安全要求/高风险操作门禁未满足','只有日期/时间戳、状态或元数据本身不能证明有证','限制已明确写入候选正文','若限制尚未披露或需先补充/明确，则映射 `request-changes`','`PASS` 映射 `approve`','`PASS WITH LIMITATIONS`','`BLOCK` 按问题是否可修复映射 `request-changes` 或 `reject`','缺少 session ID、事件号、独立证据文件或不相关主题本身不降级证据等级，也不构成 BLOCK','不要将新标签作为 CLI verdict','`request-changes` 必须可追溯','对应的规则/要求','候选正文中的位置（标题/段落或可定位内容）','完成所需的具体修改','不要泛泛要求“补证据”或扩展到无关场景','修订仅针对所列问题'])assert.ok(skill.includes(phrase),phrase);
+});
 test('synthetic case vectors cover B-context and C-missing-evidence examples without claiming behavior',async()=>{
  const skill=await readFile(path.join(root,'skills/ake/SKILL.md'),'utf8'),limited=syntheticReviewerCases[0],unsupported=syntheticReviewerCases[1];
  assert.match(limited.claim,/button text and background\/border/);assert.equal(limited.positiveEvidence[0].level,'B');
@@ -49,7 +69,7 @@ test('synthetic case vectors cover B-context and C-missing-evidence examples wit
  assert.equal(limited.expected.label,'PASS WITH LIMITATIONS');assert.equal(limited.expected.verdict,'approve');
  assert.equal(limited.negativeEvidence.length,2);assert.match(limited.limitations[0],/Other pages and unrelated menu topics were not checked/);
  assert.equal(unsupported.positiveEvidence.length,0);assert.equal(unsupported.expected.label,'BLOCK');assert.equal(unsupported.expected.verdict,'request-changes');
- assert.match(skill,/PASS WITH LIMITATIONS.*限制已明确写入候选，也映射 `approve`/);
+ assert.match(skill,/PASS WITH LIMITATIONS.*限制已明确写入候选正文，也映射 `approve`/);
  assert.match(skill,/B（当前上下文中的可用证据）.*实际浏览器检查/);
  assert.match(skill,/不要求持久化材料、独立证据文件、session\/event ID/);
  assert.match(skill,/缺少 session ID、事件号、独立证据文件或不相关主题本身不降级证据等级，也不构成 BLOCK/);
