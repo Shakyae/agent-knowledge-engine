@@ -46,7 +46,7 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
   1. 若本 Skill 目录内存在 `resources/ake-source/scripts/ake.mjs` 且支持 `update` → 用它执行；
   2. 否则，若当前处于 AKE 官方源码 checkout（`origin` 为官方仓库、`skills/ake` 无未提交改动）→ 用 `node <checkout>/scripts/ake.mjs update`；
   3. 两者都不满足 → 停止并说明原因，**不得**由模型自行拼 shell、Git、复制或清理命令。
-- 更新期间由用户确保其他程序不修改 AKE；锁不能约束不协作者。支持 canonical 与 Claude Code、CodeBuddy 双链接，不代表支持其他 Agent、独立副本或损坏链接。安装器一旦可能启动，失败或结果未知均不自动恢复：保留现场及输出中的备份路径，持续停写，检查备份 manifest、data 与当前安装、链接和 lock，先另存现场，核对差异后由人工决定恢复，勿盲目重试。更新不是原子事务。
+- 更新期间由用户确保其他程序不修改 AKE；锁不能约束不协作者。支持 canonical 与 Claude Code、CodeBuddy 双链接，不代表支持其他 Agent、独立副本或损坏链接。每次实际执行安装的更新在 `~/.agents/skills-backups/ake/<installed-version>-<UTC-timestamp>-<unique-id>/` 创建不覆盖的独立备份，包含 canonical tree、原始 lock bytes/不存在状态，并在 manifest 中记录 link 快照；不清理、不迁移旧目录。安装器一旦可能启动，失败或结果未知均不自动恢复：保留现场及输出中的备份路径，持续停写，检查备份 manifest、data 与当前安装、链接和 lock，先另存现场，核对差异后由人工决定恢复，勿盲目重试。更新不是原子事务。
 - 更新成功后提示：DSH 每次加载/注入 Skill 时读取磁盘，**本 Session 已注入的旧内容不会自动刷新**；请在新消息中重新调用 `/ake`，若仍使用旧内容则新开 Session。**无需**重启整个 DSH。后续任何项目操作都必须从新加载的 Skill base 定位共享 CLI 和 `preflight.mjs`，对目标运行一次 preflight；只有 `PROJECT_OK` 且无资源/路径错误后，才使用该共享 CLI 并附加 `--project <absolute-target>`。不要继续用旧 Session 注入的 Skill/CLI 路径。
 - 任何会覆盖用户定制、或无法确认安装目标的情况，先询问用户。
 

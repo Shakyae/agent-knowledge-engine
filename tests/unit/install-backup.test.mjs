@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, writeFile, readFile, readlink, lstat, rm, cp, symlink, chmod, rename } from 'node:fs/promises';
-import { acquireLock, backupModesMatch, createBackup, validateBackup, cleanupBackups, snapshotTree, rollbackAnchorIdentity } from '../../src/lib/install-backup.mjs';
+import { mkdir, writeFile, readFile, readlink, readdir, lstat, rm, unlink, symlink, chmod, rename } from 'node:fs/promises';
+import { acquireLock, backupModesMatch, createBackup, validateBackup, snapshotTree, rollbackAnchorIdentity } from '../../src/lib/install-backup.mjs';
 import { tempRoot } from '../helpers/test-env.mjs';
 
 async function fixture(t) { const home = await tempRoot('ake-backup-test-'); t.after(() => rm(home, { recursive: true, force: true })); return home; }
@@ -23,7 +23,6 @@ test('backup schema rejects duplicate and malformed agent snapshots while accept
   for (const mutate of cases) { const m = structuredClone(base); mutate(m); await writeFile(manifestPath, JSON.stringify(m)); await assert.rejects(validateBackup(backup.backupPath), /unsupported agent path|invalid skills directory/); }
   const legacy = structuredClone(base); legacy.agentLinks = legacy.agentLinks.filter(x => !x.path.includes('.codebuddy')); legacy.skillsDirectories = legacy.skillsDirectories.filter(x => !x.path.includes('.codebuddy'));
   await writeFile(manifestPath, JSON.stringify(legacy)); assert.equal((await validateBackup(backup.backupPath)).schemaVersion, 1);
-  await cleanupBackups(agentsHome); assert.equal((await validateBackup(backup.backupPath)).schemaVersion, 1);
 });
 
 test('rollback anchors require positive bigint identities without numeric precision loss', () => {
@@ -64,27 +63,69 @@ test('backup validation rejects unlisted and missing data-tree entries', async t
   await assert.rejects(validateBackup(backup.backupPath), error => error.code === 'BACKUP');
 });
 
-test('backup preserves absent lock state and cleanup keeps recent three plus all within 30 days', async t => {
-  const home = await fixture(t); const agentsHome = path.join(home, '.agents'); const canonical = path.join(agentsHome, 'skills', 'ake'); await mkdir(canonical, { recursive: true }); await writeFile(path.join(canonical, 'SKILL.md'), 'x');
-  const installation = { canonicalPath: canonical, loadPath: canonical, scope: 'user', mode: 'canonical', agentPaths: [] };
-  const backup = await createBackup({ agentsHome, installation, lockPath: path.join(agentsHome, '.skill-lock.json'), targetCommit: 'b'.repeat(40) });
-  const root = path.join(agentsHome, 'ake', 'backups'); await mkdir(root, { recursive: true });
-  // Actual valid backup is retained; malformed user directory must never be deleted.
-  await mkdir(path.join(root, 'manual')); await writeFile(path.join(root, 'manual', 'keep'), 'manual');
-  const outside = path.join(home, 'outside'); await mkdir(outside); await writeFile(path.join(outside, 'keep'), 'outside'); await symlink(outside, path.join(root, 'linked-backup'));
-  const warnings = await cleanupBackups(agentsHome, { now: Date.now() + 40 * 86400_000, currentBackup: backup.backupPath });
-  assert.ok(warnings.some(x => x.includes('manual')));
-  assert.equal(await readFile(path.join(root, 'manual', 'keep'), 'utf8'), 'manual');
-  assert.equal(await readFile(path.join(outside, 'keep'), 'utf8'), 'outside');
-  const seedManifestPath = path.join(backup.backupPath, 'manifest.json');
-  const seedManifest = JSON.parse(await readFile(seedManifestPath, 'utf8'));
-  const now = Date.now(); seedManifest.createdAt = new Date(now - 40 * 86400_000).toISOString(); await writeFile(seedManifestPath, JSON.stringify(seedManifest));
-  for (const [id, ageDays] of [['recent-1', 1], ['recent-2', 2], ['recent-3', 3], ['in-age', 20], ['expired', 45]]) {
-    const destination = path.join(root, id); await cp(backup.backupPath, destination, { recursive: true });
-    const manifestPath = path.join(destination, 'manifest.json'), manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-    manifest.backupId = id; manifest.createdAt = new Date(now - ageDays * 86400_000).toISOString(); await writeFile(manifestPath, JSON.stringify(manifest));
-  }
-  await cleanupBackups(agentsHome, { now });
-  for (const id of ['recent-1', 'recent-2', 'recent-3', 'in-age']) assert.equal(await lstat(path.join(root, id)).then(info => info.isDirectory()), true);
-  for (const id of [path.basename(backup.backupPath), 'expired']) await assert.rejects(lstat(path.join(root, id)), { code: 'ENOENT' });
+test('backup validates canonical tree, exact lock bytes, and Claude/CodeBuddy link snapshots', async t => {
+  const home = await fixture(t), agentsHome = path.join(home, '.agents'), canonical = path.join(agentsHome, 'skills', 'ake');
+  await mkdir(canonical, { recursive: true }); await writeFile(path.join(canonical, 'SKILL.md'), 'original');
+  const lockPath = path.join(agentsHome, '.skill-lock.json'), lockBytes = Buffer.from('{ "skills": { "ake": { "ref": "old" } } }\\n');
+  await writeFile(lockPath, lockBytes);
+  const links = ['.claude', '.codebuddy'].map(agent => path.join(home, agent, 'skills', 'ake'));
+  for (const link of links) { await mkdir(path.dirname(link), { recursive: true }); await symlink(path.relative(path.dirname(link), canonical), link); }
+  const backup = await createBackup({ agentsHome, installation: { canonicalPath: canonical, loadPath: canonical, scope: 'user', mode: 'canonical', version: '0.2.0', agentPaths: links.map(path => ({ path, mode: 'symlink' })) }, lockPath, targetCommit: 'd'.repeat(40) });
+  assert.deepEqual(await readFile(path.join(backup.backupPath, 'data', 'lock.json')), lockBytes);
+  const manifest = await validateBackup(backup.backupPath);
+  for (const link of links) assert.deepEqual(manifest.agentLinks.find(item => item.path === link), { path: link, existed: true, type: 'symlink', linkTarget: await readlink(link) });
+  await unlink(path.join(backup.backupPath, 'data', 'lock.json'));
+  await assert.rejects(validateBackup(backup.backupPath), { code: 'BACKUP' });
+});
+
+test('backup uses unknown for invalid, malformed, or symlinked canonical package metadata', async t => {
+  const home = await fixture(t), agentsHome = path.join(home, '.agents'), canonical = path.join(agentsHome, 'skills', 'ake');
+  const packageDir = path.join(canonical, 'resources', 'ake-source'), packagePath = path.join(packageDir, 'package.json');
+  await mkdir(packageDir, { recursive: true }); await writeFile(path.join(canonical, 'SKILL.md'), 'x');
+  const installation = { canonicalPath: canonical, loadPath: canonical, scope: 'user', mode: 'canonical', version: 'untrusted-checkout-version', agentPaths: [] };
+  const options = { agentsHome, installation, lockPath: path.join(agentsHome, '.skill-lock.json'), targetCommit: 'f'.repeat(40) };
+  await writeFile(packagePath, JSON.stringify({ name: 'not-ake', version: '9.9.9' }));
+  assert.match((await createBackup(options)).backupPath, /[\\/]unknown-/);
+  await writeFile(packagePath, '{broken');
+  assert.match((await createBackup(options)).backupPath, /[\\/]unknown-/);
+  const external = path.join(home, 'package.json'); await writeFile(external, JSON.stringify({ name: 'agent-knowledge-engine', version: '9.9.9' }));
+  await rm(packagePath); await symlink(external, packagePath);
+  assert.match((await createBackup(options)).backupPath, /[\\/]unknown-/);
+});
+
+test('backup refuses symlink roots and leaves external target untouched', async t => {
+  const home = await fixture(t), agentsHome = path.join(home, '.agents'), canonical = path.join(agentsHome, 'skills', 'ake');
+  await mkdir(canonical, { recursive: true }); await writeFile(path.join(canonical, 'SKILL.md'), 'x');
+  const outside = path.join(home, 'outside'); await mkdir(outside); await writeFile(path.join(outside, 'keep'), 'safe');
+  await symlink(outside, path.join(agentsHome, 'skills-backups'));
+  await assert.rejects(createBackup({ agentsHome, installation: { canonicalPath: canonical, loadPath: canonical, scope: 'user', mode: 'canonical', agentPaths: [] }, lockPath: path.join(agentsHome, '.skill-lock.json'), targetCommit: 'e'.repeat(40) }), /unsafe non-directory or symlink/);
+  assert.deepEqual(await readdir(outside), ['keep']);
+  await rm(path.join(agentsHome, 'skills-backups'));
+  await mkdir(path.join(agentsHome, 'skills-backups'));
+  await symlink(outside, path.join(agentsHome, 'skills-backups', 'ake'));
+  await assert.rejects(createBackup({ agentsHome, installation: { canonicalPath: canonical, loadPath: canonical, scope: 'user', mode: 'canonical', agentPaths: [] }, lockPath: path.join(agentsHome, '.skill-lock.json'), targetCommit: 'e'.repeat(40) }), /unsafe non-directory or symlink/);
+  await rm(path.join(agentsHome, 'skills-backups', 'ake'));
+  await writeFile(path.join(agentsHome, 'skills-backups', 'ake'), 'not a directory');
+  await assert.rejects(createBackup({ agentsHome, installation: { canonicalPath: canonical, loadPath: canonical, scope: 'user', mode: 'canonical', agentPaths: [] }, lockPath: path.join(agentsHome, '.skill-lock.json'), targetCommit: 'e'.repeat(40) }), /unsafe non-directory or symlink/);
+  assert.deepEqual(await readdir(outside), ['keep']);
+});
+
+test('backup path uses safe installed version and each backup is unique without pruning legacy data', async t => {
+  const home = await fixture(t), agentsHome = path.join(home, '.agents'), canonical = path.join(agentsHome, 'skills', 'ake');
+  await mkdir(path.join(canonical, 'resources', 'ake-source'), { recursive: true }); await writeFile(path.join(canonical, 'SKILL.md'), 'x');
+  await writeFile(path.join(canonical, 'resources', 'ake-source', 'package.json'), JSON.stringify({ name: 'agent-knowledge-engine', version: '../v 1.2' }));
+  const legacyRoot = path.join(agentsHome, 'ake', 'backups'); await mkdir(legacyRoot, { recursive: true });
+  await writeFile(path.join(legacyRoot, 'legacy'), 'untouched');
+  const installation = { canonicalPath: canonical, loadPath: canonical, scope: 'user', mode: 'canonical', version: 'checkout-version-9.9.9', agentPaths: [] };
+  const options = { agentsHome, installation, lockPath: path.join(agentsHome, '.skill-lock.json'), targetCommit: 'b'.repeat(40) };
+  const first = await createBackup(options), second = await createBackup(options);
+  assert.notEqual(first.backupPath, second.backupPath);
+  assert.match(first.backupPath, /skills-backups[\\/]ake[\\/]\.\.-v-1\.2-/);
+  assert.equal(await readFile(path.join(legacyRoot, 'legacy'), 'utf8'), 'untouched');
+  assert.equal((await validateBackup(first.backupPath)).lockExisted, false);
+  assert.equal((await validateBackup(second.backupPath)).lockExisted, false);
+  await writeFile(path.join(canonical, 'resources', 'ake-source', 'package.json'), JSON.stringify({ name: 'agent-knowledge-engine' }));
+  const missingVersion = await createBackup(options);
+  assert.match(missingVersion.backupPath, /skills-backups[\\/]ake[\\/]unknown-/);
+  assert.equal((await validateBackup(missingVersion.backupPath)).lockExisted, false);
 });

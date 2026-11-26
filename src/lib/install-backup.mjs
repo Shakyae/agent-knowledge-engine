@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { hostname } from 'node:os';
 import path from 'node:path';
-import { lstat, readdir, readFile, realpath, writeFile, mkdir, copyFile, symlink, readlink, chmod, unlink, rmdir, open } from 'node:fs/promises';
+import { lstat, readdir, readFile, realpath, writeFile, mkdir, copyFile, symlink, readlink, chmod, unlink, open } from 'node:fs/promises';
 
 const MARKER = 'ake-skill-backup';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -100,7 +100,7 @@ async function validateBackupEntries(directory) {
   if (!Array.isArray(marker.agentLinks) || new Set(marker.agentLinks.map(item => item.path)).size !== marker.agentLinks.length || marker.agentLinks.some(item => !allowedLinks.has(item.path) || typeof item.existed !== 'boolean' || (item.existed && (!['symlink', 'directory', 'file'].includes(item.type) || (item.type === 'symlink' ? typeof item.linkTarget !== 'string' || !item.linkTarget || item.linkTarget.includes('\0') : item.linkTarget !== null))) || (!item.existed && (item.type !== null || item.linkTarget !== null)))) throw new Error('backup contains an unsupported agent path');
   const allowedSkillsDirectories = new Set([path.join(marker.agentsHome, 'skills'), ...['.claude', '.codebuddy'].flatMap(agent => [path.join(path.dirname(marker.agentsHome), agent, 'skills'), path.join(path.dirname(marker.agentsHome), agent)])]);
   if (!Array.isArray(marker.skillsDirectories) || new Set(marker.skillsDirectories.map(item => item.path)).size !== marker.skillsDirectories.length || marker.skillsDirectories.some(item => !allowedSkillsDirectories.has(item.path) || typeof item.existed !== 'boolean' || (item.existed ? !Array.isArray(item.entries) || new Set(item.entries).size !== item.entries.length || item.entries.some(name => typeof name !== 'string' || !name || name === '.' || name === '..' || /[\\/\0]/.test(name)) : item.entries !== null))) throw new Error('backup contains invalid skills directory snapshots');
-  if (path.basename(directory) !== marker.backupId || !marker.entries.some(item => item.relativePath === 'canonical' && item.type === 'directory') || Boolean(marker.entries.some(item => item.relativePath === 'lock.json' && item.type === 'file')) !== marker.lockExisted || marker.entries.some(item => item.relativePath.startsWith('lock.json/'))) throw new Error('backup identity or required entries are inconsistent');
+  if (path.dirname(directory) !== path.join(marker.agentsHome, 'skills-backups', 'ake') || path.basename(directory) !== marker.backupId || !/^[A-Za-z0-9._-]+-[0-9TZ-]+-[a-f0-9]{12}$/.test(marker.backupId) || !marker.entries.some(item => item.relativePath === 'canonical' && item.type === 'directory') || Boolean(marker.entries.some(item => item.relativePath === 'lock.json' && item.type === 'file')) !== marker.lockExisted || marker.entries.some(item => item.relativePath.startsWith('lock.json/'))) throw new Error('backup identity or required entries are inconsistent');
   const canonicalLink = marker.agentLinks.find(item => item.path === marker.canonicalPath);
   if (!canonicalLink?.existed || canonicalLink.type !== 'directory') throw new Error('backup does not record the canonical directory');
   const seen = new Set();
@@ -140,6 +140,21 @@ export async function validateBackup(directory) {
   }
 }
 
+async function canonicalVersion(agentsHome, canonicalPath) {
+  try {
+    const expectedCanonical = path.join(agentsHome, 'skills', 'ake');
+    const canonicalInfo = await lstat(canonicalPath, { bigint: true });
+    if (canonicalPath !== expectedCanonical || !canonicalInfo.isDirectory() || canonicalInfo.isSymbolicLink() || await realpath(canonicalPath) !== expectedCanonical) return null;
+    const packagePath = path.join(expectedCanonical, 'resources', 'ake-source', 'package.json');
+    const before = await lstat(packagePath, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink() || await realpath(packagePath) !== packagePath) return null;
+    const packageJson = JSON.parse(await readFile(packagePath, 'utf8'));
+    const after = await lstat(packagePath, { bigint: true });
+    if (!after.isFile() || after.isSymbolicLink() || before.dev !== after.dev || before.ino !== after.ino || packageJson?.name !== 'agent-knowledge-engine' || typeof packageJson.version !== 'string' || !packageJson.version.trim()) return null;
+    return packageJson.version.trim();
+  } catch { return null; }
+}
+
 async function snapshotSkillsDirectories(agentsHome) {
   const claudePath = path.join(path.dirname(agentsHome), '.claude', 'skills');
   const snapshots = [];
@@ -167,7 +182,7 @@ export function rollbackAnchorIdentity(info) {
 
 async function captureRollbackAnchors(agentsHome) {
   const home = path.dirname(agentsHome);
-  const paths = [home, agentsHome, path.join(agentsHome, 'skills'), path.join(agentsHome, 'ake'), path.join(agentsHome, 'ake', 'backups')];
+  const paths = [home, agentsHome, path.join(agentsHome, 'skills'), path.join(agentsHome, 'ake'), path.join(agentsHome, 'skills-backups'), path.join(agentsHome, 'skills-backups', 'ake')];
   const optionalPaths = ['.claude', '.codebuddy'].flatMap(agent => [path.join(home, agent), path.join(home, agent, 'skills')]);
   const anchors = [];
   for (const directory of [...paths, ...optionalPaths]) {
@@ -193,7 +208,7 @@ export async function verifyRollbackAnchors(backup) {
     throw new Error(`rollback ancestor identity changed: ${changed.join(', ') || agentsHome}`);
   }
   const backupPath = backup.backupPath, expected = backup.backupIdentity;
-  if (!path.isAbsolute(backupPath ?? '') || !expected || path.dirname(backupPath) !== path.join(agentsHome, 'ake', 'backups')) throw new Error('backup directory identity is unavailable');
+  if (!path.isAbsolute(backupPath ?? '') || !expected || path.dirname(backupPath) !== path.join(agentsHome, 'skills-backups', 'ake')) throw new Error('backup directory identity is unavailable');
   const info = await lstat(backupPath, { bigint: true });
   if (!info.isDirectory() || info.isSymbolicLink() || JSON.stringify(rollbackAnchorIdentity(info)) !== JSON.stringify(expected.identity) || await realpath(backupPath) !== expected.realPath) throw new Error(`backup directory identity changed: ${backupPath}`);
 }
@@ -214,10 +229,12 @@ export async function createBackup({ agentsHome, installation, lockPath, targetC
   const linkPaths = [...new Set([canonicalPath, claudePath, buddyPath, ...(installation.agentPaths ?? []).map(item => item.path)])];
   const skillsDirectories = await snapshotSkillsDirectories(agentsHome);
   const agentLinks = await snapshotAgentLinks(linkPaths);
-  const backupId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(6).toString('hex')}`;
+  const version = (await canonicalVersion(agentsHome, canonicalPath))?.replace(/[^A-Za-z0-9._-]/g, '-') || 'unknown';
+  const backupId = `${version}-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(6).toString('hex')}`;
   await ensureDirectory(agentsHome);
   const updateDirectory = path.join(agentsHome, 'ake'); await ensureDirectory(updateDirectory, { create: true });
-  const root = path.join(updateDirectory, 'backups'); await ensureDirectory(root, { create: true });
+  const backupRoot = path.join(agentsHome, 'skills-backups'); await ensureDirectory(backupRoot, { create: true });
+  const root = path.join(backupRoot, 'ake'); await ensureDirectory(root, { create: true });
   let anchors;
   try { anchors = await captureRollbackAnchors(agentsHome); }
   catch (error) { throw Object.assign(new Error(`backup ancestor verification failed: ${error.message}; management directories may already exist`), { code: 'BACKUP', cause: error }); }
@@ -245,39 +262,6 @@ export async function createBackup({ agentsHome, installation, lockPath, targetC
   } catch (error) {
     throw Object.assign(new Error(`backup creation/verification failed: ${error.message}`), { code: 'BACKUP' });
   }
-}
-
-async function rmTree(target) {
-  const info = await exists(target);
-  if (!info) return;
-  if (info.isSymbolicLink() || info.isFile()) { await unlink(target); return; }
-  for (const name of await readdir(target)) await rmTree(path.join(target, name));
-  await rmdir(target);
-}
-
-export async function cleanupBackups(agentsHome, { now = Date.now(), currentBackup = null } = {}) {
-  const updateDirectory = path.join(agentsHome, 'ake');
-  const updateStat = await exists(updateDirectory);
-  if (updateStat?.isSymbolicLink() || (updateStat && !updateStat.isDirectory())) return ['backup parent is unsafe; cleanup skipped'];
-  const root = path.join(updateDirectory, 'backups');
-  const rootStat = await exists(root);
-  if (rootStat?.isSymbolicLink() || (rootStat && !rootStat.isDirectory())) return ['backup root is not a real directory; cleanup skipped'];
-  const dirs = await readdir(root, { withFileTypes: true }).catch(error => error.code === 'ENOENT' ? [] : Promise.reject(error));
-  const valid = [];
-  const warnings = [];
-  for (const dir of dirs) {
-    const full = path.join(root, dir.name);
-    try { const info = await lstat(full); if (!info.isDirectory() || info.isSymbolicLink()) continue; const manifest = await validateBackup(full); const time = Date.parse(manifest.createdAt); if (time > now) warnings.push(`retained future-dated backup ${manifest.backupId}`); valid.push({ full, id: manifest.backupId, time }); }
-    catch (error) { warnings.push(`retained unverified backup ${dir.name}: ${error.message}`); }
-  }
-  valid.sort((a, b) => b.time - a.time || a.id.localeCompare(b.id));
-  const byId = new Map();
-  for (const item of valid) byId.set(item.id, [...(byId.get(item.id) ?? []), item]);
-  const keep = new Set(valid.slice(0, 3).map(x => x.full));
-  for (const [id, items] of byId) if (items.length > 1) { warnings.push(`duplicate backup id ${id}; retained all matching directories`); for (const item of items) keep.add(item.full); }
-  for (const item of valid) if (now - item.time <= 30 * 86400_000 || item.full === currentBackup) keep.add(item.full);
-  for (const item of valid) if (!keep.has(item.full)) { try { await rmTree(item.full); } catch (error) { warnings.push(`could not remove ${item.id}: ${error.message}`); } }
-  return warnings;
 }
 
 export { snapshotTree, sha256 };

@@ -89,8 +89,8 @@ test('anchor acquisition failure reports BACKUP and does not run installer or re
   assert.equal(result.errorCode, 'BACKUP', JSON.stringify(result)); assert.equal(result.stage, 'backup');
   assert.match(result.message, /management directories may already exist/);
   assert.equal(installed || restored, false); assert.equal(released, true);
-  assert.equal((await lstat(path.join(f.agentsHome, 'ake', 'backups'))).isDirectory(), true);
-  assert.deepEqual(await readdir(path.join(f.agentsHome, 'ake', 'backups')), []);
+  assert.equal(await lstat(path.join(f.agentsHome, 'skills-backups', 'ake')).then(info => info.isDirectory()), true);
+  assert.deepEqual(await readdir(path.join(f.agentsHome, 'skills-backups', 'ake')), []);
   assert.equal(await readFile(path.join(f.canonical, 'SKILL.md'), 'utf8'), '---\\nname: ake\\n---\\n# old\\n');
 });
 
@@ -433,10 +433,15 @@ test('trusted checkout bootstrap migrates temp local install to exact remote SHA
   run('git', ['init', checkout]); run('git', ['-C', checkout, 'add', '.']); run('git', ['-C', checkout, '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-m', 'checkout']);
   run('git', ['-C', checkout, 'remote', 'add', 'origin', 'https://github.com/Shakyae/agent-knowledge-engine.git']);
   await mkdir(path.join(canonical, 'resources', 'ake-source', 'scripts'), { recursive: true });
-  const targetFiles = { 'SKILL.md': '# remote target', 'bootstrap.mjs': 'export {};', 'resources/ake-source/package.json': '{"version":"0.2.0"}', 'resources/ake-source/scripts/ake.mjs': '// CLI' };
+  const targetFiles = { 'SKILL.md': '# remote target', 'bootstrap.mjs': 'export {};', 'resources/ake-source/package.json': '{"name":"agent-knowledge-engine","version":"0.2.0"}', 'resources/ake-source/scripts/ake.mjs': '// CLI' };
   for (const [relative, contents] of Object.entries(targetFiles)) await writeFile(path.join(canonical, ...relative.split('/')), '# old');
+  await writeFile(path.join(canonical, 'resources', 'ake-source', 'package.json'), JSON.stringify({ name: 'agent-knowledge-engine', version: '0.1.0' }));
   const lockPath = path.join(home, '.agents', '.skill-lock.json'), originalLock = { skills: { ake: { sourceType: 'local', source: checkout }, other: { sourceType: 'github', ref: 'keep' } } };
   await writeFile(lockPath, JSON.stringify(originalLock));
+  const oldBackupRoot = path.join(home, '.agents', 'ake', 'backups'), legacyTarget = path.join(root, 'legacy-target');
+  await mkdir(oldBackupRoot, { recursive: true }); await writeFile(path.join(oldBackupRoot, 'legacy.txt'), 'legacy bytes');
+  await mkdir(legacyTarget); await writeFile(path.join(legacyTarget, 'keep'), 'outside'); await symlink(legacyTarget, path.join(oldBackupRoot, 'legacy-link'));
+  const oldBackupBefore = await treeSnapshot(oldBackupRoot);
   const result = await runUpdate({ entry: path.join(checkout, 'scripts', 'ake.mjs'), installationOptions: { entry: path.join(checkout, 'scripts', 'ake.mjs'), home, env: {} }, home,
     flags: { dryRun: false, json: true, acceptCustomized: true }, probeSkillsCli: async () => {},
     resolveRemote: async () => ({ sourceUrl: 'https://github.com/Shakyae/agent-knowledge-engine.git', repo: 'Shakyae/agent-knowledge-engine', defaultBranch: 'main', targetCommit: targetSha, entries: Object.entries(targetFiles).map(([relativePath, bytes]) => ({ relativePath, bytes, mode: '100644', type: 'blob' })) }),
@@ -447,6 +452,9 @@ test('trusted checkout bootstrap migrates temp local install to exact remote SHA
     } });
   assert.equal(result.status, 'updated', JSON.stringify(result)); assert.ok(result.installationAfter, JSON.stringify(result)); assert.equal(result.bootstrap, true); assert.equal(result.initiatedBy, 'checkout'); assert.equal(result.scopeBefore, 'development');
   assert.ok(result.warnings.some(warning => warning.includes('源码 checkout 引导')));
+  assert.match(result.backupPath, /skills-backups[\\/]ake[\\/]0\.1\.0-/);
+  assert.doesNotMatch(result.backupPath, /0\.2\.0/);
+  assert.deepEqual(await treeSnapshot(oldBackupRoot), oldBackupBefore, 'successful update leaves legacy backup files and symlink unchanged');
   const lock = JSON.parse(await readFile(lockPath, 'utf8'));
   assert.equal(lock.skills.ake.sourceType, 'github'); assert.equal(lock.skills.ake.ref, targetSha); assert.deepEqual(lock.skills.other, originalLock.skills.other);
 });

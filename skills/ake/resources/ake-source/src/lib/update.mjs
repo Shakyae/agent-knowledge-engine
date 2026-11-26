@@ -5,7 +5,7 @@ import { readFile, readdir, lstat, realpath, readlink, mkdtemp, rm, mkdir, write
 import { fileURLToPath } from 'node:url';
 import { readInstallation } from './installation.mjs';
 import { resolveOfficialSource, resolveRemote, runGit } from './git-remote.mjs';
-import { acquireLock, createBackup, validateBackup, verifyRollbackAnchors, cleanupBackups, snapshotTree, sha256 } from './install-backup.mjs';
+import { acquireLock, createBackup, validateBackup, verifyRollbackAnchors, snapshotTree, sha256 } from './install-backup.mjs';
 
 const UPDATE_FLAGS = new Set(['--dry-run', '--json', '--accept-customized']);
 export function parseUpdateArgs(argv) {
@@ -571,8 +571,6 @@ export async function runUpdate(options = {}) {
     const installationAfter = await (options.readAfter ?? (async () => await resolveInstallation({ ...installationOptions, allowCompletedBootstrap: Boolean(installation.bootstrap) })))();
     output.installationAfter = publicInstallation(installationAfter);
     if (installationAfter.sourceDeclarationMissing) output.warnings.push('已安装版本未声明 repository.url；下次更新需要包含该字段的版本，否则将因无法确认来源而拒绝');
-    try { output.warnings.push(...await (options.cleanupBackups ?? cleanupBackups)(installation.agentsHome, { currentBackup: backup.backupPath })); }
-    catch (error) { output.warnings.push(`backup cleanup failed; retained backups: ${error.message}`); }
     output.reloadNotice = 'DSH 每次加载/注入 Skill 时读取磁盘；本 Session 已注入的旧内容不会自动刷新。更新后请在新消息中重新调用 `/ake`，若上下文仍使用旧注入内容，请新开 Session 后再试；无需声称必须重启 DSH。';
     report('updated', 'complete', null, 'AKE updated and verified; replacement is non-atomic');
   } catch (error) {
