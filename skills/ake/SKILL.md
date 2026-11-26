@@ -131,7 +131,9 @@ bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 
 ## 独立审核与发布授权
 - **Agent Teams**：优先由未参与候选生成、且适合该领域的独立 reviewer 检查。以真实 reviewer 名称运行 `review <id> --reviewer ... --verdict <approve|request-changes|reject> --notes ...`；不得伪装身份。发出一次请求后，等待该 reviewer 的实际审核结果；派单成功、工具接受或沉默都不是审核完成。若当前轮次无法等待实际结果，暂停并如实告知用户/Lead，不自行假称已审核。
 - **Single Session**：有可用独立子代理时，交由未参与生成的 reviewer 审核并等待其实际结果；没有可用 reviewer 时，说明独立审核不可用并暂停，等待安排 reviewer。作者自检可作为补充记录，但不得声称独立，也不得替代所需的独立审核。
-- Reviewer 报告使用 `PASS`、`PASS WITH LIMITATIONS`、`BLOCK` 标签；现有 CLI verdict 保持 `approve|request-changes|reject`：`PASS` 映射 `approve`；`PASS WITH LIMITATIONS` 若核心主张有据且限制已明确写入候选，也映射 `approve`；若需先补充/明确限制，则映射 `request-changes`。`BLOCK` 按问题是否可修复映射 `request-changes` 或 `reject`。不要将新标签作为 CLI verdict。
+- Reviewer 报告使用 `PASS`、`PASS WITH LIMITATIONS`、`BLOCK` 标签；现有 CLI verdict 保持 `approve|request-changes|reject`：`PASS` 映射 `approve`；`PASS WITH LIMITATIONS` 若核心主张有据且限制已明确写入候选正文，也映射 `approve`；若限制尚未披露或需先补充/明确，则映射 `request-changes`。`BLOCK` 按问题是否可修复映射 `request-changes` 或 `reject`。不要将新标签作为 CLI verdict。
+- 判定要针对每项核心主张及操作风险，不可用局部验证证明整体：对相关部分的 A/B 证据充分、但范围或场景未覆盖且限制已在候选正文明确披露时，可 `PASS WITH LIMITATIONS`；未验证/待验证（`verified: pending`）本身不自动阻塞，应说明尚待验证的具体内容，且不得宣称已验证。若核心主张为 C，或关键安全要求/高风险操作门禁未满足，必须 `BLOCK`，按可修复性映射 `request-changes`/`reject`。只有日期/时间戳、状态或元数据本身不能证明有证；证据必须与主张相关且可核对。
+- `request-changes` 必须可追溯：指出对应的规则/要求、候选正文中的位置（标题/段落或可定位内容）及完成所需的具体修改；若是核心证据缺口或安全要求未满足，说明阻塞原因与必要补证/修复。不要泛泛要求“补证据”或扩展到无关场景；修订仅针对所列问题，必要时明确哪些未覆盖内容可作为披露限制而非阻塞项。保留候选既有状态与绑定门禁。照常要求独立审核及人类出版授权。
 - 证据等级针对候选的核心主张，而非元数据完整度。**A（强直接证据）** = 与主张相关的源代码/差异、实际测试日志、可复现结果，或有意义的前后对比；不相关的代码或测试不能支撑该主张。**B（当前上下文中的可用证据）** = 与主张相关的当前运行/系统状态、实际浏览器检查、此 Session Agent 的直接验证、用户对其意图/验收的确认，或可读取的配置、安装脚本、系统状态。B 不要求持久化材料、独立证据文件、session/event ID，也不要求把会话内直接观察再包装成独立佐证；按主张判断关联性和局限。**C（核心证据缺失）** = 核心主张没有基本相关证据、证据与主张不匹配，或被现有证据反驳。A/B 可支持相关核心主张；C 对核心主张须标 `BLOCK`，并按可修复性映射 `request-changes`/`reject`。缺少 session ID、事件号、独立证据文件或不相关主题本身不降级证据等级，也不构成 BLOCK；不得为了满足字段制造证据。
 - 若潜在知识有价值但因 C 级证据不足不能形成候选，报告“潜在知识待补证据”及具体缺口/验证路径，不能说“无新增知识”。`AKE · 本次无新增知识` 仅用于确实没有新的、可复用结果。
 
