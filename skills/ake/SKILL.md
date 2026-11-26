@@ -26,7 +26,7 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
 | `ake status` | 查看安装状态，同时保留原有知识统计 |
 | `ake update` | 检查并更新已安装的 Skill（参数以 `ake --help` 为准） |
 
-说明：`ake` 指 AKE 源码或项目内附带的 CLI（`node scripts/ake.mjs …` 或 `node .ake/tools/scripts/ake.mjs …`）。Skill 的安装与链接由上面的 Vercel Skills CLI 负责；`npx skills update` 不会推进已固定到某个 commit 的安装，因此更新请用 `ake update`。
+说明：`ake` 指本 Skill 随附的共享 CLI（`node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs …`）；目标项目命令以 `--project <绝对项目路径>` 显式选择数据。AKE 源码 checkout CLI 仅用于 AKE 自身源码的开发/测试，不作为目标项目操作入口。Skill 内部执行目标项目命令也必须使用随附共享 CLI。`.ake/tools/` 中遗留的旧副本完全忽略、不执行、不覆盖。Skill 的安装与链接由上面的 Vercel Skills CLI 负责；`npx skills update` 不会推进已固定到某个 commit 的安装，因此更新请用 `ake update`。
 
 ## C. 知识管理能力
 
@@ -34,8 +34,8 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
 - **自动评估沉淀**：实质任务完成并经用户确认后，评估本次是否有可复用知识值得沉淀。
 - **手动评估当前 Session**：直接要求 AKE 评估这段工作是否值得整理（不要求先跑完自动流程）。
 - **手动整理指定经验**：明确指定「把某段经验整理成候选」，AKE 只按你的指定范围整理。
-- **查看候选**：`node .ake/tools/scripts/ake.mjs candidate list`（查看全部候选及状态）。
-- **检查审核状态**：`node .ake/tools/scripts/ake.mjs candidate show <id>` / `candidate check <id>`。
+- **查看候选**：使用本 Skill 随附的共享 CLI，传入 `--project <绝对项目路径>`（查看全部候选及状态）；不要调用项目 `.ake/tools` 旧副本。
+- **检查审核状态**：同一共享 CLI 执行 `candidate show <id>` / `candidate check <id>`，并显式传入 `--project <绝对项目路径>`。
 - **发布授权流程**：候选经独立 reviewer 审核后，需**用户明确授权**才 `approve <id> --by <human> --confirm` 并 `publish <id>`；未授权时保持未发布。
 
 ## 路由规则
@@ -47,7 +47,7 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
   2. 否则，若当前处于 AKE 官方源码 checkout（`origin` 为官方仓库、`skills/ake` 无未提交改动）→ 用 `node <checkout>/scripts/ake.mjs update`；
   3. 两者都不满足 → 停止并说明原因，**不得**由模型自行拼 shell、Git、复制或清理命令。
 - 更新期间由用户确保其他程序不修改 AKE；锁不能约束不协作者。支持 canonical 与 Claude Code、CodeBuddy 双链接，不代表支持其他 Agent、独立副本或损坏链接。安装器一旦可能启动，失败或结果未知均不自动恢复：保留现场及输出中的备份路径，持续停写，检查备份 manifest、data 与当前安装、链接和 lock，先另存现场，核对差异后由人工决定恢复，勿盲目重试。更新不是原子事务。
-- 更新成功后提示：DSH 每次加载/注入 Skill 时读取磁盘，**本 Session 已注入的旧内容不会自动刷新**；请在新消息中重新调用 `/ake`，若仍使用旧内容则新开 Session。**无需**重启整个 DSH。
+- 更新成功后提示：DSH 每次加载/注入 Skill 时读取磁盘，**本 Session 已注入的旧内容不会自动刷新**；请在新消息中重新调用 `/ake`，若仍使用旧内容则新开 Session。**无需**重启整个 DSH。后续任何项目操作都必须从新加载的 Skill base 定位共享 CLI 和 `preflight.mjs`，对目标运行一次 preflight；只有 `PROJECT_OK` 且无资源/路径错误后，才使用该共享 CLI 并附加 `--project <absolute-target>`。不要继续用旧 Session 注入的 Skill/CLI 路径。
 - 任何会覆盖用户定制、或无法确认安装目标的情况，先询问用户。
 
 ## 示例
@@ -59,38 +59,38 @@ description: 在实现、架构、排障、部署、风险变更前检索工程�
 ## 安装、初始化与日常使用的区别
 
 - **安装**：把 Skill 放进用户级 Skills 目录，每台机器/每个用户一次。
-- **初始化**：为某个 Git 项目建立 `.ake/`（知识目录、配置、项目内 CLI），每个项目一次。
+- **初始化**：为某个 Git 项目建立 `.ake/`（知识目录、配置），每个项目一次；项目操作统一使用 Skill 随附共享 CLI，不在项目内复制 CLI。
 - **日常使用**：以具体请求调用（例如 `/ake 评估这段经验是否值得沉淀`），或由 AKE 按任务阶段自动检索/沉淀；单独输入 `/ake` 只显示帮助，不触发检索或沉淀。日常使用不重复安装或初始化。
 
 # AKE knowledge operations
 
 先确定目标项目的绝对路径，并使用 Skill 加载器提供的 **本 Skill base directory** 绝对路径；不得从当前工作目录、目标项目或 AKE 源码 checkout 推导 Skill 路径。若加载环境未提供该绝对路径，先请用户提供/确认已安装 Skill 的位置，不要猜路径。
 
-本发行版中的 AKE CLI 和 Skill helper 要求运行它们的 AKE host 使用 Node.js >=22.20.0；较低版本应在执行任务、访问目标项目、运行子进程或写入前失败并报告当前/最低版本。项目本地 CLI 的门禁模块随离线资源 `resources/ake-source/src/lib/runtime.mjs` 分发，bootstrap 会在 apply 前核对该资源。该要求只针对运行 AKE 的 Node，不改目标应用的 `package.json`/`engines`。Preflight/bootstrap 保留已有项目 `.ake` 配置与 CLI，不会自动升级它们；若 Skill 版本较旧，须经正常批准的安装/更新流程获得此版本门禁。
+本发行版中的共享 CLI 和 Skill helper 要求运行它们的 AKE host 使用 Node.js >=22.20.0；较低版本应在执行任务、访问目标项目、运行子进程或写入前失败并报告当前/最低版本。共享 CLI 的门禁模块随离线资源 `resources/ake-source/src/lib/runtime.mjs` 分发；bootstrap 在 apply 前核对所需共享资源，preflight 在执行 status 前 fail closed 检查共享 CLI 资源。该要求只针对运行 AKE 的 Node，不改目标应用的 `package.json`/`engines`。Preflight/bootstrap 保留已有项目 `.ake/config.json`，忽略 `.ake/tools/` 遗留副本且不升级它们；若 Skill 版本较旧，须经正常批准的 Skill 安装/更新流程获得此版本门禁。
 
 ## 项目初始化（按需）
 
-先按目标状态选择入口：若 `.ake/config.json` 与 `.ake/tools/scripts/ake.mjs` 都是普通文件，Agent 直接运行本 Skill 的 `preflight.mjs`；否则先运行 `bootstrap.mjs --dry-run` 预览。不要要求用户代跑预检。Bootstrap 清理 `GIT_*` 环境变量，只在 canonical 目标目录工作，不向上迁移、不创建嵌套仓库；`bootstrap --dry-run` 及普通 bootstrap 均不运行 `git init`。已有父级 worktree、linked worktree、unborn branch（没有首次 commit）都是有效 Git worktree，不要求新建 `.git`。只有 bootstrap 或 preflight 明确返回稳定码 `NOT_GIT_WORKTREE` 时，才可走下面的选项流程：bootstrap 用于尚未初始化/部分状态，preflight 只在现有 AKE 项目 CLI 的 status 明确指出没有仓库时触发。Preflight 的 `GIT_UNAVAILABLE`、`BARE_REPOSITORY`、`STATUS_FAILED`、权限错误、损坏/异常 `.git` 及任何未识别结果都不得当作无 Git，也不得询问 init；只报告并停止相关 AKE 操作。
+先按目标状态选择入口：若 `.ake/config.json` 是普通文件，Agent 直接运行本 Skill 的 `preflight.mjs`；否则先运行 `bootstrap.mjs --dry-run` 预览。`.ake/tools/` 旧副本完全忽略，不检查、不执行、不覆盖。不要要求用户代跑预检。Bootstrap 清理 `GIT_*` 环境变量，只在 canonical 目标目录工作，不向上迁移、不创建嵌套仓库；`bootstrap --dry-run` 及普通 bootstrap 均不运行 `git init`。已有父级 worktree、linked worktree、unborn branch（没有首次 commit）都是有效 Git worktree，不要求新建 `.git`。只有 bootstrap 或 preflight 明确返回稳定码 `NOT_GIT_WORKTREE` 时，才可走下面的选项流程：bootstrap 用于配置缺失的目标，preflight 使用随 Skill 分发的共享 CLI status。Preflight 的 `GIT_UNAVAILABLE`、`BARE_REPOSITORY`、`STATUS_FAILED`、权限错误、损坏/异常 `.git` 及任何未识别结果都不得当作无 Git，也不得询问 init；只报告并停止相关 AKE 操作。
 
 对稳定码 `NOT_GIT_WORKTREE`（来自 bootstrap 或现有 AKE 项目 preflight），先用本 Skill 的 `init-git.mjs --inspect --dir <绝对目标>` 再检。只读 JSON 返回 canonical `target` 和 `identity`（device/inode/birthtimeNs）；identity 仅用于把执行绑定到询问前看到的目录实例，**不是授权凭据**。只有状态为 `non-repository` 且 identity 可用时，才请求明确选择，并展示 exact canonical 路径。Agent Teams 中只有 Lead 可以向用户发起询问或执行 Git init helper；子 Agent 不得调用用户交互工具、自行询问用户或执行 `init-git.mjs`，应将路径与状态报告给 Lead 并停止该初始化分支。Lead 必须自行重新 inspect 当前 canonical 目标并使用新取得的 identity。Lead 先尝试宿主原生单选（如 `ask_user_question`）；只有宿主没有原生选择能力或该能力技术上不可用（而不是因宿主/系统策略或权限明确拒绝交互）时，Lead 才必须在普通文本消息中展示同一 canonical 路径及选项：“1 — 只在此目标运行 Git init（不 add/commit/push）”；“2 — 暂不初始化”。等待用户针对该路径明确回复 `1` 或 `2`。只有对当前展示路径的明确回复 `1` 才授权继续；回复 `2`、拒绝、空/缺失/含糊答复或任何其他答复均不得运行 helper。拒绝/选 2 时，本任务不再询问 Git 初始化；无明确答复时保持等待，不执行初始化。若当前业务必须用 AKE/Git，说明受限并停止该部分，其他可独立完成的业务继续。若用户选择另一个目标，先取得新路径、对其重新 inspect，并由 Lead 为新 canonical 路径重新展示选择；旧选择绝不授权新路径。非 Team 场景下，原生交互不可用时 Agent 可用同样的普通文本选项询问用户。文本回退中，只有用户针对当前展示路径明确回复 `1` 才构成授权；不得把其他自由文本、工具调用参数、沉默、identity 或 helper 调用当作授权。若宿主不能提供原生单选且 Lead 无法进行文本询问，不运行 helper。若用户交互工具被宿主/系统策略或权限明确拒绝，不得改用文本渠道绕过拒绝；立即停止并报告。
 
-只有用户通过原生选择选中“只在此目标运行 Git init”，或在 Lead 展示文本选项后针对当前显示的 canonical 路径明确回复 `1`，才能调用 `node <本 Skill base directory 的绝对路径>/init-git.mjs --dir <JSON 返回的同一 canonical 路径> --expected-identity <同一 JSON 的 device:inode:birthtimeNs>`。在 Team 场景中，Lead 必须由自己直接调用该 helper，使用其刚才重新 inspect 得到的同一 canonical 路径和 identity；不得将用户答复或 helper 执行转交给子 Agent。子 Agent 不得把未收到的答复视为同意，也不得执行 helper。拒绝、选 `2`、空/缺失/含糊答复或其他非 `1` 答复都不得调用 helper；拒绝/选 `2` 后本任务不再询问，未收到明确答复时等待或报告受限。helper 会先校验该快照，再在 Git 状态检查前后和启动前复核目录身份及仓库状态；若目录被替换/身份不可用/已经变化，不运行 `git init`，不自动重问；需用户主动选择另一个目标并为新身份重新授权。Git `init` 没有跨平台原子“仅首次创建、已存在即失败”操作：此流程要求单写者，不得让其他 Agent、终端或程序并发操作该目标；重检只能缩窄、不能消除外部检查-使用竞态。Git 输出中的 `Reinitialized` 只作停止信号，不能作为成功/安全证据。执行或后验验证非零、信号终止、结果不确定时，保留 `.git` 与模板/配置等盘面，不重试、不清理、不继续 AKE 写入，报告人工检查。`git init` 可能创建 `.git` 内的默认配置、模板文件及其他 Git 初始化产物；不得承诺只写 `.git` 或只有元数据副作用。成功后验证 exact work-tree root 和 unborn HEAD；若 helper 返回 `already-worktree`/`already-parent-worktree`，表示未运行 Git init，直接按当前状态进行对应预检，不重复询问。若原目标已有 AKE config/CLI，重新运行 preflight，绝不 bootstrap 覆盖；否则重新 bootstrap dry-run，任何 `conflict` 都停止，无冲突才 apply。原生流程仅用户选择对应选项构成授权；文本回退仅针对当前 exact canonical 路径的明确回复 `1` 构成授权。其他自由文本、工具参数、identity 快照或 helper 调用本身都不构成人类授权；Skill 仅是软流程约束，不是宿主安全边界。
+只有用户通过原生选择选中“只在此目标运行 Git init”，或在 Lead 展示文本选项后针对当前显示的 canonical 路径明确回复 `1`，才能调用 `node <本 Skill base directory 的绝对路径>/init-git.mjs --dir <JSON 返回的同一 canonical 路径> --expected-identity <同一 JSON 的 device:inode:birthtimeNs>`。在 Team 场景中，Lead 必须由自己直接调用该 helper，使用其刚才重新 inspect 得到的同一 canonical 路径和 identity；不得将用户答复或 helper 执行转交给子 Agent。子 Agent 不得把未收到的答复视为同意，也不得执行 helper。拒绝、选 `2`、空/缺失/含糊答复或其他非 `1` 答复都不得调用 helper；拒绝/选 `2` 后本任务不再询问，未收到明确答复时等待或报告受限。helper 会先校验该快照，再在 Git 状态检查前后和启动前复核目录身份及仓库状态；若目录被替换/身份不可用/已经变化，不运行 `git init`，不自动重问；需用户主动选择另一个目标并为新身份重新授权。Git `init` 没有跨平台原子“仅首次创建、已存在即失败”操作：此流程要求单写者，不得让其他 Agent、终端或程序并发操作该目标；重检只能缩窄、不能消除外部检查-使用竞态。Git 输出中的 `Reinitialized` 只作停止信号，不能作为成功/安全证据。执行或后验验证非零、信号终止、结果不确定时，保留 `.git` 与模板/配置等盘面，不重试、不清理、不继续 AKE 写入，报告人工检查。`git init` 可能创建 `.git` 内的默认配置、模板文件及其他 Git 初始化产物；不得承诺只写 `.git` 或只有元数据副作用。成功后验证 exact work-tree root 和 unborn HEAD；若 helper 返回 `already-worktree`/`already-parent-worktree`，表示未运行 Git init，直接按当前状态进行对应预检，不重复询问。之后按项目配置文件单独分支：目标已有 `.ake/config.json`，只重新运行 preflight，绝不 bootstrap 覆盖；目标没有该配置（即使存在 `.ake/tools` 旧文件），重新运行 bootstrap dry-run，任何 `conflict` 都停止，无冲突才 apply。原生流程仅用户选择对应选项构成授权；文本回退仅针对当前 exact canonical 路径的明确回复 `1` 构成授权。其他自由文本、工具参数、identity 快照或 helper 调用本身都不构成人类授权；Skill 仅是软流程约束，不是宿主安全边界。
 
-零项目文件写入的保证仅适用于 bootstrap dry-run 和 bootstrap 在 apply 前拒绝的分支；不适用于 `git init`（Git 可复制模板、生成默认配置等），也不适用于下面会执行既有项目代码的 preflight。
+零项目文件写入的保证仅适用于 bootstrap dry-run 和 bootstrap 在 apply 前拒绝的分支；不适用于 `git init`（Git 可复制模板、生成默认配置等），也不适用于下面会执行 Skill 随附共享 CLI 的 preflight。共享 CLI 的执行也不保证无副作用。
 
-若目标已初始化，不要重复 bootstrap、复制或升级配置/CLI。Bootstrap 的 config/bundle 元数据比较不证明现有 CLI 版本。需要确认项目根时，Agent 在任务真实目录和当前环境中运行一次 status 路径预检：
+若目标已有 `.ake/config.json`，即视为已初始化；不要在项目内复制、升级或运行 CLI。项目 `.ake/tools/` 中任何旧副本都必须完全忽略：不检查、不执行、不覆盖。由用户审阅外部脚本并迁移为调用本 Skill 随附的共享 CLI，始终附带 `--project <绝对目标路径>`。Bootstrap 仅在配置缺失时初始化；配置和知识数据格式保持不变。需要确认项目根时，Agent 在任务真实目录和当前环境中运行一次 status 路径预检：
 
 ```bash
 node <本 Skill base directory 的绝对路径>/preflight.mjs --dir <绝对目标路径>
 ```
 
-Helper 只对既有项目 CLI 运行 `status --json`，另只读提取 Skill 随附用户 CLI 的静态版本声明作为可选提示，不运行该 CLI、不联网、不重复 status 或知识扫描；要求 status 返回绝对 `project` 路径且其 realpath 与目标 realpath 相同；status 成功仅验证项目选择，不证明任何任务命令兼容。相对、缺失、不可解析或不匹配的路径均停止。预检后，Agent 在相同真实 cwd/env 直接执行实际任务所需的命令。若只读操作（例如 `search`）需要任何 CLI options，先在同一真实 cwd/env 只读运行 `node .ake/tools/scripts/ake.mjs --help`，并检查该 CLI 当前 `search` usage 是否精确声明本次每个所需 flag 及值形态（例如 `--status STATUS`、`--budget-bytes N`、`--type TYPE`、`--limit N`、`--json`）。不同版本的 help 文字差异本身不单独判失败；但所需参数缺失、help 失败/不可读/无法解析时，能力即未获证明：不要运行带该选项的 search，不得删掉选项静默降级、猜测替代参数或重搜；明确报告 CLI 未声明/无法确认该选项，不能声称该过滤/预算已生效。Help 是 CLI 的能力声明，不是行为证明或安全保证。支持的只读 search 执行一次，直接使用原始完整结果，包括 query/options、filters、coverage，不重复搜索来验证或重新提取结果；若请求 `--type`/`--status`，还须核对结果 JSON 回显的 filters 与请求完全一致，否则把过滤结果标为未验证，不重跑。`--budget-bytes` 只涉及其明确契约范围，不得称为完整 stdout 硬上限。对写操作不运行破坏性探测；实际命令若返回不支持/参数不兼容等错误，应如实诊断，不得将 status、help 或入口存在宣称为写操作兼容/安全，也不得将其作为授权。
+Helper 对 Skill 随附共享 CLI 运行一次 `status --json`，要求 status 返回绝对 `project` 路径且其 realpath 与目标 realpath 相同；不读取/执行项目旧 CLI，不联网、不重复 status 或知识扫描。Status 成功仅验证项目选择，不证明任何任务命令兼容。相对、缺失、不可解析或不匹配的路径均停止。预检后，Agent 在相同真实 cwd/env 使用同一共享 CLI，附加 `--project <absolute-target>` 执行实际任务命令。若只读操作（例如 `search`）需要任何 CLI options，先在同一真实 cwd/env 只读运行 `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs --help`，并检查该 CLI 当前 `search` usage 是否精确声明本次每个所需 flag 及值形态（例如 `--status STATUS`、`--budget-bytes N`、`--type TYPE`、`--limit N`、`--json`）。不同版本的 help 文字差异本身不单独判失败；但所需参数缺失、help 失败/不可读/无法解析时，能力即未获证明：不要运行带该选项的 search，不得删掉选项静默降级、猜测替代参数或重搜；明确报告 CLI 未声明/无法确认该选项，不能声称该过滤/预算已生效。Help 是 CLI 的能力声明，不是行为证明或安全保证。支持的只读 search 执行一次，直接使用原始完整结果，包括 query/options、filters、coverage，不重复搜索来验证或重新提取结果；若请求 `--type`/`--status`，还须核对结果 JSON 回显的 filters 与请求完全一致，否则把过滤结果标为未验证，不重跑。`--budget-bytes` 只涉及其明确契约范围，不得称为完整 stdout 硬上限。对写操作不运行破坏性探测；实际命令若返回不支持/参数不兼容等错误，应如实诊断，不得将 status、help 或入口存在宣称为写操作兼容/安全，也不得将其作为授权。
 
-`VERSION_ADVISORY` 分别报告 Skill bundle、随附用户 CLI、项目 CLI 自报版本和项目 config 版本；这四者不可互相推断，旧 CLI 没有自报字段时为 unknown。仅比较明确的稳定三段版本；预发布、无效或未知版本不比较。版本声明不是身份认证，也不证明能力兼容。`comparison` 为 `user-newer` 时，在本 Session 中按 canonical 项目路径和两个 CLI 版本作为去重键，同一差异只提示一次：提供“审阅升级方案”与“暂不升级”两个选项；不要等选择才继续不依赖升级的原任务，也不要在选择之前写项目。选择审阅后，先确认 canonical 项目路径，备份项目 `.ake/tools` 和配置及可能涉及的其他文件到安全位置；比较当前工具与 Skill 随附资源，列出拟替换文件、定制差异及回退步骤，保留知识和候选数据。向用户展示具体变更方案并取得对实际写入的明确授权；审阅选择本身不授权写入。获授权后按方案人工更新，验证项目路径、CLI 版本、status 和所需命令，并检查配置与知识数据保持符合预期；失败时保留现场并报告，不盲目重试。此流程不提供自动升级引擎。拒绝、跳过、无答复均不升级。`unknown` 只建议人工检查，不猜版本或阻塞任务。去重依赖 Agent 会话上下文，是软流程，不是宿主强制或持久化保证；Agent Teams 由 Lead 统一提示。
+版本状态仅报告 Skill bundle、随附共享 CLI、项目 config 的独立声明；不存在独立项目 CLI 版本。版本声明不是身份认证，也不证明行为兼容。所有项目共享同一 Skill CLI，只有共享 Skill `ake update` 路径；移除逐项目升级机制，不得通过更新/复制覆盖旧 `.ake/tools` 副本。更新期间停用所有调用该共享 CLI 的 AKE 操作与外部脚本，直到更新成功并完成核验。更新替换 Skill 资源时非原子，且不能为其他会话/进程提供读写隔离；由用户确保单写者。
 
-实际操作沿用核验时的真实 cwd/env；仅在 cwd、环境、目标项目配置/CLI 或相关上下文发生变化后重做身份核验，不要求每条写命令前都重复扫描。Preflight 会运行项目已有 CLI，不能保证无副作用或认证 CLI 身份。若 DSH 宿主、系统策略或权限拒绝 helper/子进程，立即停止，不得通过 Node/bash 包装器、MCP 或其他执行路径绕过。Bootstrap 遇到既有配置/CLI只保留现状；若报告项目根不符或部分初始化，先备份并人工审阅迁移/合并方案，禁止自动复制、升级或覆盖项目文件。
+实际操作沿用核验时的真实 cwd/env；仅在 cwd、环境、目标项目配置或相关上下文发生变化后重做身份核验，不要求每条写命令前都重复扫描。Preflight 会运行 Skill bundle 随附的共享 CLI，不能保证无副作用或认证 CLI 身份。若 DSH 宿主、系统策略或权限拒绝 helper/子进程，立即停止，不得通过 Node/bash 包装器、MCP 或其他执行路径绕过。Bootstrap 遇到既有 `.ake/config.json` 只保留配置；`.ake/tools/` 遗留文件完全忽略且保持原样。若报告项目根不符或初始化冲突，按具体结果停止，不自动复制、升级或覆盖项目文件。
 
-若缺任一文件，使用本 Skill 随附的离线资源执行器，不依赖 AKE 源码 checkout 或调用时的工作目录。先展示计划：
+仅当 `.ake/config.json` 缺失时（无论 `.ake/tools/` 是否存在），使用本 Skill 随附的离线资源执行器，不依赖 AKE 源码 checkout 或调用时的工作目录。已存在配置时必须走 preflight，不能因旧 CLI 缺失而重新初始化。先展示计划：
 
 ```bash
 node <本 Skill base directory 的绝对路径>/bootstrap.mjs --dir <绝对目标路径> --dry-run
@@ -102,12 +102,12 @@ dry-run 若报告任何 `conflict`，停止并报告冲突路径；不要应用�
 node <本 Skill base directory 的绝对路径>/bootstrap.mjs --dir <绝对目标路径>
 ```
 
-bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 初始化器。若资源不完整，它会列出确切缺失文件且不写项目文件；按 README 中的官方 Skill 安装说明从 AKE 源码 checkout 恢复/更新 Skill，再重试。初始化不安装任何全局 Skill，也不升级已有项目 CLI。
+bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 初始化器。若资源不完整，它会列出确切缺失文件且不写项目文件；按 README 中的官方 Skill 安装说明从 AKE 源码 checkout 恢复/更新 Skill，再重试。初始化不安装任何全局 Skill，也不会在项目中复制或升级任何 CLI。
 
 ## 写入结果未知与发布恢复
 
 - 任一写命令返回未知结果（如中断、超时、输出丢失或非零退出但无法确认是否已写）时，禁止盲目重试、重新发布或改参数再跑。先检查真实状态，不能从“没有成功消息”推断零写入。
-- `publish` 的未知结果先只读检查实际配置与候选状态：读取项目 `.ake/config.json` 的 `publishLog`；仅当有效配置中该字段不存在时才使用默认 `.ake/publish-log.jsonl`，该相对路径以项目根为基准。若配置不可读/无效或字段值不可解析，不猜默认位置。用 `node .ake/tools/scripts/ake.mjs candidate show <id> --json` 核对候选 `pendingPublication`，检查目标内容 hash 与该实际账本文件。只有当前 CLI 明确支持 `publish --reconcile`，且候选、目标和账本状态一致、待对账 marker/内容 hash 可确认时，才运行 `node .ake/tools/scripts/ake.mjs publish <id> --reconcile`。旧版 CLI 不支持 reconcile、候选/目标/账本状态不符或任何状态无法确认时，不得尝试普通 publish 或其他写命令，停止并报告需人工处理。Reconcile 由 CLI 绑定/hash 门禁完成对账，不得手改 marker/账本。若 reconcile 自身结果未知，重新只读检查实际盘面，不得盲目重复。
+- `publish` 的未知结果先只读检查实际配置与候选状态：读取项目 `.ake/config.json` 的 `publishLog`；仅当有效配置中该字段不存在时才使用默认 `.ake/publish-log.jsonl`，该相对路径以项目根为基准。若配置不可读/无效或字段值不可解析，不猜默认位置。用 `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs candidate show <id> --project <absolute-target> --json` 核对候选 `pendingPublication`，检查目标内容 hash 与该实际账本文件。只有当前 CLI 明确支持 `publish --reconcile`，且候选、目标和账本状态一致、待对账 marker/内容 hash 可确认时，才运行 `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs publish <id> --reconcile --project <absolute-target>`。旧版 CLI 不支持 reconcile、候选/目标/账本状态不符或任何状态无法确认时，不得尝试普通 publish 或其他写命令，停止并报告需人工处理。Reconcile 由 CLI 绑定/hash 门禁完成对账，不得手改 marker/账本。若 reconcile 自身结果未知，重新只读检查实际盘面，不得盲目重复。
 - 其他写命令结果未知时先检查其目标状态；只有已证实该具体命令在参数解析阶段拒绝，且执行顺序能证明写入路径尚未开始，才可安全修正参数后重试。普通非零退出、缺少输出或状态不明不构成此证明；无法证明时停止并请用户决定下一步。
 
 程序可测试的行为包括 bootstrap 的 Git 根校验、dry-run、冲突拒绝、离线初始化、既有 CLI/config 保留与路径状态分类，以及 preflight 的 status 路径核验。Agent 执行的实际任务命令单独按其原始结果判断；例如 search 的 query、options、coverage 不得由预检器重造。第三方 Skill 安装器是否分发完整、宿主拒绝是否生效、Agent 是否遵循不绕过提示均不能由这些脚本测试证明；不要将提示规则描述成安全边界。
@@ -115,7 +115,7 @@ bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 
 ## 任务前：用户可见通知与按需检索
 - 当任务首次进入 AKE 触发阶段（相关工程知识检索或任务后沉淀）时，在首个 AKE CLI 操作前给用户一条简短通知；同一阶段连续进行的多次搜索/候选命令合并在这条通知中，不逐条重复通知。
 - Agent Teams 由 Lead/任务 owner 统一发用户通知；成员只将检索/候选结果汇报给 Lead，不各自重复通知用户。
-- 在触发的检索阶段，先说明「我会检索 AKE 项目知识并按相关性使用」，再按模块/技术、症状、操作构造具体关键词。若使用既有项目 CLI 且项目根需要确认，先用本 Skill 的 `preflight.mjs --dir <absolute-target>` 核验一次；随后在同一真实 cwd/env 只读运行一次 `node .ake/tools/scripts/ake.mjs --help`，检查其 `search` usage 精确列出了本次命令所需的每个 option 及值形态（包括 `--json`）。若任一所需 option 缺失、help 无法读取或不能解析，停止这次带 options 的 search，告知用户该 CLI 未声明/无法确认支持；不得删除选项、静默降级或再搜索。Help 仅是能力声明，不证明运行行为或安全。通过声明检查后，在相同 cwd/env 运行一次 `node .ake/tools/scripts/ake.mjs search <terms> [options] --json`。记录实际命令的 query/options，并将原始 JSON 的 query、filters、searchedRoots、coverage、coverageReasons、truncated 和 results 一并作为本阶段结果；若要求 `--type`/`--status`，核对 JSON filters 与请求一致，缺失/不符即报告未验证，不重搜。只在触发相关任务时检索，不要求无关任务做空搜索。
+- 在触发的检索阶段，先说明「我会检索 AKE 项目知识并按相关性使用」，再按模块/技术、症状、操作构造具体关键词。若项目根需要确认，先用本 Skill 的 `preflight.mjs --dir <absolute-target>` 核验一次；随后在同一真实 cwd/env 只读运行一次 `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs --help`，检查其 `search` usage 精确列出了本次命令所需的每个 option 及值形态（包括 `--json`）。若任一所需 option 缺失、help 无法读取或不能解析，停止这次带 options 的 search，告知用户该 CLI 未声明/无法确认支持；不得删除选项、静默降级或再搜索。Help 仅是能力声明，不证明运行行为或安全。通过声明检查后，在相同 cwd/env 运行一次 `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs search <terms> [options] --project <absolute-target> --json`。记录实际命令的 query/options，并将原始 JSON 的 query、filters、searchedRoots、coverage、coverageReasons、truncated 和 results 一并作为本阶段结果；若要求 `--type`/`--status`，核对 JSON filters 与请求一致，缺失/不符即报告未验证，不重搜。只在触发相关任务时检索，不要求无关任务做空搜索。
 - 搜索默认覆盖四类知识根：Agent Notes、Defensive Patterns、Postmortems、Cookbooks；结果须展示/说明类别标签。需要时使用 `--include-candidates`，并可用精确的 `--type`、`--status` 和 `--limit` 缩小结果；status 依文档类型各自权威来源读取，缺失值为 `unknown`，过滤后仍须如实报告筛选范围。
 - 默认不设输出预算；确需 `--budget-bytes N` 时，限额只约束 UTF-8 编码的命中 payload，不是完整 stdout/JSON 硬上限。若预算导致结果省略，必须检查 `coverage`、`truncated` 和 `coverageReasons`，向用户提示结果可能不完整，不得当作无命中。
 - 命中后只读查看相关文档；判断其 scope、status、verified、证据和当前代码是否仍适用，不把命中视为自动指令。最终报告指出检索词、命中文档/类别及适用性；没有命中只表示“未找到”，不表示知识不存在。
@@ -149,11 +149,11 @@ bootstrap 从本 Skill 的 `resources/ake-source/` 离线资源调用原有 AKE 
 
 
 ## 常用命令
-- `node .ake/tools/scripts/ake.mjs candidate new --kind <note|defensive-pattern|postmortem|cookbook> --title <title> --author <actual-name> --target <path> --body <file>`
-- `node .ake/tools/scripts/ake.mjs candidate submit <id>`
-- `node .ake/tools/scripts/ake.mjs candidate check <id>`
-- `node .ake/tools/scripts/ake.mjs review <id> --reviewer <actual-reviewer> --verdict <approve|request-changes|reject> --notes <evidence>`；CLI verdict 不接受 PASS 标签
-- 仅在用户明确授权发布后：`node .ake/tools/scripts/ake.mjs approve <id> --by <human> --confirm`，随后 `publish <id>`
+- `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs candidate new --kind <note|defensive-pattern|postmortem|cookbook> --title <title> --author <actual-name> --target <path> --body <file> --project <absolute-target>`
+- `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs candidate submit <id> --project <absolute-target>`
+- `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs candidate check <id> --project <absolute-target>`
+- `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs review <id> --reviewer <actual-reviewer> --verdict <approve|request-changes|reject> --notes <evidence> --project <absolute-target>`；CLI verdict 不接受 PASS 标签
+- 仅在用户明确授权发布后：`node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs approve <id> --by <human> --confirm --project <absolute-target>`，随后用同一共享 CLI 执行 `publish <id> --project <absolute-target>`
 
 ## 用户可见最终报告
 任务结束时简要填写，不隐去未验证项：

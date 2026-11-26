@@ -81,9 +81,9 @@ test('CLI and standalone Skill helpers enforce the runtime before task work', as
     AKE_RUNTIME_PROJECT: project,
   });
   if (supported) {
-    assert.equal(preflight.status, 0, preflight.stderr);
-    assert.match(preflight.stdout, /PROJECT_OK/);
-    assert.equal(await readFile(marker, 'utf8'), 'ran');
+    assert.equal(preflight.status, 1);
+    assert.match(preflight.stderr, /^SHARED_CLI_UNAVAILABLE:/);
+    await assert.rejects(access(marker), { code: 'ENOENT' });
   } else {
     assertVersionFailure(preflight);
     await assert.rejects(access(marker), { code: 'ENOENT' });

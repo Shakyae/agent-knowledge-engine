@@ -21,12 +21,12 @@ test('CLI reports its own version without project and matches release metadata',
   assert.deepEqual(JSON.parse(bundled.stdout), { cliVersion: metadata.version });
 });
 
-test('Skill documents advisory choices, session deduplication and no unauthorized upgrade', async () => {
+test('Skill documents a single shared CLI and no per-project upgrade path', async () => {
   const skill = await readFile(path.join(root, 'skills/ake/SKILL.md'), 'utf8');
-  for (const marker of ['同一差异只提示一次', '审阅升级方案', '暂不升级', '不要在选择之前写项目', '取得对实际写入的明确授权', '不是宿主强制']) assert.ok(skill.includes(marker), marker);
+  for (const marker of ['所有项目共享同一 Skill CLI', '移除逐项目升级机制', '更新期间停用', '更新替换 Skill 资源时非原子', '不能为其他会话/进程提供读写隔离']) assert.ok(skill.includes(marker), marker);
 });
 
-test('real legacy project CLI remains unknown despite config and bundle versions', async t => {
+test('preflight ignores legacy CLI copies and reports the shared CLI/config versions', async t => {
   const target = await realpath(await mkdtemp(path.join(os.tmpdir(), 'ake-version-legacy-')));
   t.after(() => rm(target, { recursive: true, force: true }));
   const init = spawnSync('git', ['init', '--quiet', target], { encoding: 'utf8' });
@@ -44,42 +44,29 @@ test('real legacy project CLI remains unknown despite config and bundle versions
   assert.equal(result.status, 0, result.stderr);
   const line = result.stdout.split('\n').find(x => x.startsWith('VERSION_ADVISORY: '));
   const advisory = JSON.parse(line.slice('VERSION_ADVISORY: '.length));
-  assert.equal(advisory.projectCliVersion, null);
+  assert.equal(advisory.sharedCliVersion, JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).version);
   assert.equal(advisory.configVersion, '99.0.0');
-  assert.equal(advisory.comparison, 'unknown');
+  assert.equal(advisory.projectCliVersion, undefined);
   assert.deepEqual(await readFile(config), beforeConfig);
   assert.deepEqual(await readFile(cliPath), beforeCli);
 });
 
-test('preflight compares independent versions without writing project files', async t => {
+test('preflight fails closed when the bundled shared CLI is missing', async t => {
   const fixture = await realpath(await mkdtemp(path.join(os.tmpdir(), 'ake-version-advisory-')));
   t.after(() => rm(fixture, { recursive: true, force: true }));
   const skill = path.join(fixture, 'skill'), target = path.join(fixture, 'project');
-  const source = path.join(skill, 'resources/ake-source');
-  await mkdir(path.join(source, 'scripts'), { recursive: true });
+  await mkdir(path.join(skill, 'resources/ake-source/scripts'), { recursive: true });
   await mkdir(path.join(target, '.ake/tools/scripts'), { recursive: true });
+  const init = spawnSync('git', ['init', '--quiet', target], { encoding: 'utf8' });
+  assert.equal(init.status, 0, init.stderr);
   await cp(preflight, path.join(skill, 'preflight.mjs'));
-  await writeFile(path.join(source, 'package.json'), JSON.stringify({ version: '8.0.0' }));
-  await writeFile(path.join(source, 'scripts/ake.mjs'), `const CLI_VERSION = '3.2.1';\nthrow Error('must not execute');\n`);
-  const config = path.join(target, '.ake/config.json');
-  await writeFile(config, JSON.stringify({ version: '99.0.0' }));
+  await writeFile(path.join(target, '.ake/config.json'), JSON.stringify({ version: '99.0.0' }));
   const projectCli = path.join(target, '.ake/tools/scripts/ake.mjs');
-  const fixtureCli = version => `console.log(JSON.stringify({project:process.cwd()${version === null ? '' : `,cliVersion:${JSON.stringify(version)}`}}))`;
-  for (const [version, comparison] of [['3.1.9', 'user-newer'], ['3.2.1', 'equal'], ['4.0.0', 'project-newer'], [null, 'unknown'], ['3.1.0-rc.1', 'unknown'], ['03.0.0', 'unknown']]) {
-    const contents = fixtureCli(version);
-    await writeFile(projectCli, contents);
-    const before = await readFile(config);
-    const result = run(path.join(skill, 'preflight.mjs'), ['--dir', target], target);
-    assert.equal(result.status, 0, result.stderr);
-    const line = result.stdout.split('\n').find(item => item.startsWith('VERSION_ADVISORY: '));
-    const report = JSON.parse(line.slice('VERSION_ADVISORY: '.length));
-    assert.deepEqual(report, { project: target, bundleVersion: '8.0.0', userCliVersion: '3.2.1', projectCliVersion: version, configVersion: '99.0.0', comparison });
-    assert.deepEqual(await readFile(config), before);
-    assert.equal(await readFile(projectCli, 'utf8'), contents);
-    assert.deepEqual(await readdir(path.join(target, '.ake')), ['config.json', 'tools']);
-  }
-  await writeFile(path.join(source, 'scripts/ake.mjs'), `process.exitCode=1`);
-  const failed = run(path.join(skill, 'preflight.mjs'), ['--dir', target], target);
-  assert.equal(failed.status, 0, failed.stderr);
-  assert.equal(JSON.parse(failed.stdout.split('\n').find(x => x.startsWith('VERSION_ADVISORY: ')).slice(18)).comparison, 'unknown');
+  const legacy = 'process.exitCode=71; console.error("must not execute");';
+  await writeFile(projectCli, legacy);
+  const result = run(path.join(skill, 'preflight.mjs'), ['--dir', target], target);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^SHARED_CLI_UNAVAILABLE:/);
+  assert.equal(await readFile(projectCli, 'utf8'), legacy);
+  assert.deepEqual((await readdir(path.join(target, '.ake'))).sort(), ['config.json', 'tools']);
 });

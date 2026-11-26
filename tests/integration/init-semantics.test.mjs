@@ -36,6 +36,7 @@ test('omitted --dir initializes exactly the current Git work tree directory', as
   const result = run([], dir);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(await readFile(path.join(dir, '.ake/config.json'), 'utf8')).version, '0.1.0');
+  await assert.rejects(readFile(path.join(dir, '.ake/tools/scripts/ake.mjs')), { code: 'ENOENT' });
 });
 
 test('Git subdirectory remains the target and does not redirect to repository root', async t => {
@@ -91,6 +92,19 @@ test('existing differing project files are not overwritten', async t => {
   const result = run(['--dir', dir], dir);
   assert.equal(result.status, 1);
   assert.equal(await readFile(config, 'utf8'), '{"keep":"mine"}\n');
+});
+
+test('init preserves obsolete local CLI copies without creating or using them', async t => {
+  const dir = await temp(t); gitInit(dir);
+  const oldCli = path.join(dir, '.ake/tools/scripts/ake.mjs');
+  const oldModule = path.join(dir, '.ake/tools/src/lib/custom.mjs');
+  await mkdir(path.dirname(oldCli), { recursive: true }); await mkdir(path.dirname(oldModule), { recursive: true });
+  await writeFile(oldCli, 'old executable sentinel\\n'); await writeFile(oldModule, 'old module sentinel\\n');
+  const result = run(['--dir', dir], dir);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await readFile(oldCli, 'utf8'), 'old executable sentinel\\n');
+  assert.equal(await readFile(oldModule, 'utf8'), 'old module sentinel\\n');
+  assert.match(result.stdout, /Install the ake Skill separately/);
 });
 
 test('dry-run plans initialization but leaves target unchanged', async t => {

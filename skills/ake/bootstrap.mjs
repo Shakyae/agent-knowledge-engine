@@ -35,8 +35,12 @@ const requiredResources = [
   'src/lib/frontmatter.mjs',
   'src/lib/fsx.mjs',
   'src/lib/init.mjs',
+  'src/lib/git-remote.mjs',
+  'src/lib/install-backup.mjs',
+  'src/lib/installation.mjs',
   'src/lib/publish.mjs',
   'src/lib/report.mjs',
+  'src/lib/update.mjs',
   'src/lib/search.mjs',
   'src/lib/runtime.mjs',
 ];
@@ -141,14 +145,14 @@ function existingVersionMessage(configPath) {
     const config = JSON.parse(readFileSync(configPath, 'utf8'));
     const bundled = JSON.parse(readFileSync(path.join(bundledRoot, 'package.json'), 'utf8'));
     if (typeof config.version !== 'string' || typeof bundled.version !== 'string') {
-      return 'Cannot determine whether the installed AKE version matches the offline bundle: config or bundle metadata has no version. The project CLI was not executed; preserving existing files.';
+      return 'Cannot determine whether the project config matches the offline bundle: config or bundle metadata has no version. Project-local CLI copies are ignored; preserving existing config and legacy files.';
     }
     if (config.version !== bundled.version) {
-      return `Existing config version ${config.version} differs from bundled metadata version ${bundled.version}. The project CLI was not executed, so its own version cannot be determined; preserving existing config and CLI without reinstalling or upgrading.`;
+      return `Existing config version ${config.version} differs from bundled metadata version ${bundled.version}. This does not identify a project CLI; the shared CLI is supplied by the Skill. Preserving existing config and legacy files without reinstalling or upgrading.`;
     }
-    return `Existing config version ${config.version} matches bundled metadata version ${bundled.version}; the project CLI version cannot be independently verified without executing it. Preserving existing config and CLI without reinstalling or upgrading.`;
+    return `Existing config version ${config.version} matches bundled metadata version ${bundled.version}. This does not change the shared CLI supplied by the Skill. Preserving existing config and legacy files without reinstalling or upgrading.`;
   } catch {
-    return 'Cannot determine whether the installed AKE version matches the offline bundle: config or bundle metadata is unavailable or invalid. The project CLI was not executed; preserving existing files.';
+    return 'Cannot determine whether the project config matches the offline bundle: config or bundle metadata is unavailable or invalid. Project-local CLI copies are ignored; preserving existing files.';
   }
 }
 
@@ -207,19 +211,14 @@ async function main() {
   }
 
   const configPath = path.join(target, '.ake', 'config.json');
-  const cliPath = path.join(target, '.ake', 'tools', 'scripts', 'ake.mjs');
   const configState = inspectProjectFile(target, '.ake/config.json');
-  const cliState = inspectProjectFile(target, '.ake/tools/scripts/ake.mjs');
-  for (const state of [configState, cliState]) {
+  for (const state of [configState]) {
     if (state.kind === 'invalid') return fail(`EXISTING_PATH_INVALID: refusing to initialize because ${state.path} is unsafe or not a regular project file (${state.reason}); no project files were written.`);
     if (state.kind === 'error') return fail(`EXISTING_PATH_UNAVAILABLE: cannot inspect ${state.path} (${state.reason}); no project files were written.`);
   }
-  if (configState.kind === 'present' && cliState.kind === 'present') {
-    console.log(`AKE bootstrap already exists in ${target}. ${existingVersionMessage(configPath)}`);
+  if (configState.kind === 'present') {
+    console.log(`AKE config already exists in ${target}. ${existingVersionMessage(configPath)}`);
     return 0;
-  }
-  if (configState.kind !== cliState.kind) {
-    return fail(`PARTIAL_INITIALIZATION: ${configState.path} is ${configState.kind} and ${cliState.path} is ${cliState.kind}; back up and review this project before initializing; no project files were written.`);
   }
 
   const missing = requiredResources.filter((relative) => {

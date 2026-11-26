@@ -10,6 +10,7 @@ import { samePath } from '../../skills/ake/init-git.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const skillSource = path.join(repoRoot, 'skills', 'ake');
+const sharedCli = path.join(skillSource, 'resources', 'ake-source', 'scripts', 'ake.mjs');
 
 async function fixture(t) {
   const root = await realpath(await tempRoot('ake-git-init-'));
@@ -22,6 +23,7 @@ async function fixture(t) {
     target: path.join(root, 'target'),
     helper: path.join(skill, 'init-git.mjs'),
     bootstrap: path.join(skill, 'bootstrap.mjs'),
+    preflight: path.join(skill, 'preflight.mjs'),
   };
 }
 
@@ -47,8 +49,31 @@ function gitInit(target, cwd) {
 }
 
 function runCli(target, args, env) {
-  return runNode(path.join(target, '.ake/tools/scripts/ake.mjs'), args, target, env);
+  return runNode(sharedCli, [...args, '--project', target], target, env);
 }
+
+test('authorized Git init for an existing config-only project resumes with preflight only', async t => {
+  const { root, target, helper, preflight, bootstrap } = await fixture(t);
+  await mkdir(path.join(target, '.ake/tools/scripts'), { recursive: true });
+  const config = Buffer.from('{"version":"0.0.9"}\n');
+  const legacyCli = Buffer.from('process.exitCode=71; console.error("must remain unused");\n');
+  const bootstrapMarker = path.join(root, 'bootstrap-was-run');
+  await writeFile(bootstrap, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(bootstrapMarker)}, 'ran');`);
+  await writeFile(path.join(target, '.ake/config.json'), config);
+  await writeFile(path.join(target, '.ake/tools/scripts/ake.mjs'), legacyCli);
+  const inspected = JSON.parse(runHelper(helper, target, root, ['--inspect']).stdout);
+  assert.equal(inspected.status, 'non-repository');
+  // Test harness only: this models the helper after the Lead receives explicit target-specific consent.
+  const initialized = runHelper(helper, target, root, identityArgs(inspected.identity));
+  assert.equal(initialized.status, 0, initialized.stderr);
+  assert.equal(JSON.parse(initialized.stdout).status, 'initialized');
+  const result = runNode(preflight, ['--dir', target], target);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /PROJECT_OK/);
+  assert.deepEqual(await readFile(path.join(target, '.ake/config.json')), config);
+  assert.deepEqual(await readFile(path.join(target, '.ake/tools/scripts/ake.mjs')), legacyCli);
+  await assert.rejects(access(bootstrapMarker), { code: 'ENOENT' });
+});
 
 test('Windows path equality does not fold case; separator variants remain normalized', () => {
   assert.equal(samePath(String.raw`C:\Work\Repo`, String.raw`C:/Work/Repo`, 'win32'), true);
@@ -85,7 +110,7 @@ test('explicit-selection workflow helper initializes exact non-repo and full AKE
 
   const applied = runNode(bootstrap, ['--dir', target], root);
   assert.equal(applied.status, 0, applied.stderr);
-  assert.match(await readFile(path.join(target, '.ake/tools/scripts/ake.mjs'), 'utf8'), /candidate new/);
+  await assert.rejects(readFile(path.join(target, '.ake/tools/scripts/ake.mjs')), { code: 'ENOENT' });
   const env = cleanTestEnv({ HOME: root, DSH_AGENTS_HOME: path.join(root, '.agents') });
   const status = runCli(target, ['status', '--json'], env);
   assert.equal(status.status, 0, status.stderr);
@@ -139,10 +164,10 @@ test('static Skill contract specifies Lead-mediated exact-target text fallback',
     '子 Agent 不得把未收到的答复视为同意，也不得执行 helper',
   ]) assert.ok(skill.includes(phrase), phrase);
   for (const phrase of [
-    '若使用既有项目 CLI 且项目根需要确认，先用本 Skill 的 `preflight.mjs --dir <absolute-target>` 核验一次',
-    '通过声明检查后，在相同 cwd/env 运行一次 `node .ake/tools/scripts/ake.mjs search <terms> [options] --json`',
+    '若项目根需要确认，先用本 Skill 的 `preflight.mjs --dir <absolute-target>` 核验一次',
+    '通过声明检查后，在相同 cwd/env 运行一次 `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs search <terms> [options] --project <absolute-target> --json`',
     '原始 JSON 的 query、filters、searchedRoots、coverage、coverageReasons、truncated 和 results',
-    '只读运行 `node .ake/tools/scripts/ake.mjs --help`',
+    '只读运行 `node <本 Skill base directory>/resources/ake-source/scripts/ake.mjs --help`',
     'search` usage 是否精确声明本次每个所需 flag 及值形态',
     '所需参数缺失、help 失败/不可读/无法解析时，能力即未获证明',
     '不得删掉选项静默降级、猜测替代参数或重搜',

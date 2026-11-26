@@ -42,7 +42,7 @@ function inspectProjectFile(root, relative) {
       if (error.code === 'ENOTDIR') return { kind: 'invalid', path: current, reason: 'an ancestor is not a directory' };
       return { kind: 'error', path: current, reason: error.message };
     }
-    if (stat.isSymbolicLink()) return { kind: 'invalid', path: current, reason: 'symbolic links are not accepted for project config/CLI paths' };
+    if (stat.isSymbolicLink()) return { kind: 'invalid', path: current, reason: 'symbolic links are not accepted for the project config path' };
     const last = index === parts.length - 1;
     if (!last && !stat.isDirectory()) return { kind: 'invalid', path: current, reason: 'an ancestor is not a directory' };
     if (last && !stat.isFile()) return { kind: 'invalid', path: current, reason: 'entry is not a regular file' };
@@ -52,6 +52,23 @@ function inspectProjectFile(root, relative) {
 
 const LEGACY_NO_GIT_ERROR = 'not a AKE project: no .git repository found';
 const CURRENT_NO_GIT_ERROR = `NOT_GIT_WORKTREE: ${LEGACY_NO_GIT_ERROR}`;
+const SHARED_CLI_RESOURCES = [
+  'scripts/ake.mjs',
+  'src/lib/candidates.mjs',
+  'src/lib/config.mjs',
+  'src/lib/documents.mjs',
+  'src/lib/frontmatter.mjs',
+  'src/lib/fsx.mjs',
+  'src/lib/git-remote.mjs',
+  'src/lib/init.mjs',
+  'src/lib/install-backup.mjs',
+  'src/lib/installation.mjs',
+  'src/lib/publish.mjs',
+  'src/lib/report.mjs',
+  'src/lib/runtime.mjs',
+  'src/lib/search.mjs',
+  'src/lib/update.mjs',
+];
 
 function knownNoGitStatusFailure(result) {
   const stderr = (result.stderr ?? '').replace(/\r\n/g, '\n').trim();
@@ -101,36 +118,23 @@ function inspectGitIndependently(target) {
   return { status: report.status, root: report.workTreeRoot };
 }
 
-function stableVersion(value) {
-  if (typeof value !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)) return null;
-  const parts = value.split('.').map(Number);
-  return parts.every(Number.isSafeInteger) ? parts : null;
-}
-
-function versionAdvisory(target, projectReport, configPath) {
+function versionAdvisory(target, configPath) {
   const skillRoot = path.dirname(fileURLToPath(import.meta.url));
   const sourceRoot = path.join(skillRoot, 'resources', 'ake-source');
-  let bundleVersion = null, configVersion = null, userCliVersion = null;
+  let bundleVersion = null, configVersion = null, sharedCliVersion = null;
   try { const value = JSON.parse(readFileSync(path.join(sourceRoot, 'package.json'), 'utf8')).version; if (typeof value === 'string') bundleVersion = value; } catch {}
   try { const value = JSON.parse(readFileSync(configPath, 'utf8')).version; if (typeof value === 'string') configVersion = value; } catch {}
   try {
     const cli = path.join(sourceRoot, 'scripts', 'ake.mjs');
     const info = lstatSync(cli);
     if (info.isFile() && !info.isSymbolicLink() && info.size <= 1024 * 1024) {
-      // Inspect the CLI's literal declaration; never execute it for optional advice.
+      // Inspect the shared CLI's literal declaration; never execute it for version advice.
       const text = readFileSync(cli, 'utf8');
       const matches = [...text.matchAll(/^const CLI_VERSION = '([^'\r\n]+)';/gm)];
-      if (matches.length === 1) userCliVersion = matches[0][1];
+      if (matches.length === 1) sharedCliVersion = matches[0][1];
     }
   } catch { /* Version advice is optional and never blocks the original task. */ }
-  const projectCliVersion = typeof projectReport.cliVersion === 'string' ? projectReport.cliVersion : null;
-  const user = stableVersion(userCliVersion), project = stableVersion(projectCliVersion);
-  let comparison = 'unknown';
-  if (user && project) {
-    const firstDifference = user.findIndex((part, index) => part !== project[index]);
-    comparison = firstDifference < 0 ? 'equal' : user[firstDifference] > project[firstDifference] ? 'user-newer' : 'project-newer';
-  }
-  return { project: target, bundleVersion, userCliVersion, projectCliVersion, configVersion, comparison };
+  return { project: target, bundleVersion, sharedCliVersion, configVersion };
 }
 
 function main() {
@@ -149,14 +153,23 @@ function main() {
   }
 
   const configState = inspectProjectFile(target, '.ake/config.json');
-  const cliState = inspectProjectFile(target, '.ake/tools/scripts/ake.mjs');
-  for (const state of [configState, cliState]) {
+  const skillRoot = path.dirname(fileURLToPath(import.meta.url));
+  const sourceRoot = path.join(skillRoot, 'resources', 'ake-source');
+  const cli = path.join(sourceRoot, 'scripts', 'ake.mjs');
+  const missingResources = [];
+  for (const relative of SHARED_CLI_RESOURCES) {
+    const file = path.join(sourceRoot, relative);
+    try {
+      const info = lstatSync(file);
+      if (!info.isFile() || info.isSymbolicLink()) missingResources.push(file);
+    } catch { missingResources.push(file); }
+  }
+  if (missingResources.length) return fail('SHARED_CLI_UNAVAILABLE', `bundled shared CLI resources are missing or unsafe:\n${missingResources.join('\n')}`);
+  for (const state of [configState]) {
     if (state.kind === 'invalid') return fail('PROJECT_FILE_INVALID', `refusing preflight because ${state.path} is unsafe or not a regular project file (${state.reason}).`);
     if (state.kind === 'error') return fail('PROJECT_FILE_UNAVAILABLE', `cannot inspect ${state.path} (${state.reason}).`);
   }
-  if (configState.kind === 'missing' && cliState.kind === 'missing') return fail('NOT_INITIALIZED', `project config and CLI are missing under ${target}; use the Skill bootstrap preview.`);
-  if (configState.kind !== cliState.kind) return fail('PARTIAL_INITIALIZATION', `${configState.path} is ${configState.kind} and ${cliState.path} is ${cliState.kind}; review the existing project before proceeding.`);
-  const cli = cliState.path;
+  if (configState.kind === 'missing') return fail('NOT_INITIALIZED', `project config is missing under ${target}; use the Skill bootstrap preview.`);
 
   // Keep the target fixed and pass one inherited environment snapshot to status.
   const env = { ...process.env };
@@ -168,37 +181,37 @@ function main() {
     timeout: 30_000,
   });
   if (result.error) {
-    if (result.error.code === 'ETIMEDOUT') return fail('STATUS_TIMEOUT', 'existing project CLI status --json exceeded the 30-second limit.');
-    if (result.error.code === 'ENOBUFS') return fail('STATUS_OUTPUT_TOO_LARGE', 'existing project CLI status --json exceeded the 1 MiB output limit.');
-    return fail('STATUS_LAUNCH_FAILED', `could not run the existing project CLI: ${result.error.message}`);
+    if (result.error.code === 'ETIMEDOUT') return fail('STATUS_TIMEOUT', 'bundled shared CLI status --json exceeded the 30-second limit.');
+    if (result.error.code === 'ENOBUFS') return fail('STATUS_OUTPUT_TOO_LARGE', 'bundled shared CLI status --json exceeded the 1 MiB output limit.');
+    return fail('STATUS_LAUNCH_FAILED', `could not run the bundled shared CLI: ${result.error.message}`);
   }
   if (result.status !== 0) {
     const rawDetail = (result.stderr || result.stdout || '').replace(/\r\n/g, '\n').trim();
     const detail = rawDetail.slice(0, 500);
     const exit = result.status === null ? `by signal ${result.signal ?? 'unknown'}` : `with exit code ${result.status}`;
     if (result.signal || result.status !== 1) {
-      return fail('STATUS_FAILED', `existing project CLI status --json exited ${exit}${detail ? `: ${detail}` : ''}; independent Git inspection was not run because this was not the expected ordinary status failure. Do not initialize Git.`);
+      return fail('STATUS_FAILED', `bundled shared CLI status --json exited ${exit}${detail ? `: ${detail}` : ''}; independent Git inspection was not run because this was not the expected ordinary status failure. Do not initialize Git.`);
     }
     if (!knownNoGitStatusFailure(result)) {
-      return fail('STATUS_FAILED', `existing project CLI status --json exited ${exit}${detail ? `: ${detail}` : ''}; output did not exactly match a supported legacy/current no-Git diagnostic, so independent Git inspection was not run. Do not initialize Git.`);
+      return fail('STATUS_FAILED', `bundled shared CLI status --json exited ${exit}${detail ? `: ${detail}` : ''}; output did not exactly match a supported legacy/current no-Git diagnostic, so independent Git inspection was not run. Do not initialize Git.`);
     }
     const git = inspectGitIndependently(target);
     if (git.error) {
       const next = git.error.code === 'GIT_UNAVAILABLE'
         ? 'Git is unavailable; restore/install Git and rerun preflight. Do not offer initialization.'
         : 'Independent Git inspection failed or found abnormal metadata; do not offer initialization.';
-      return fail(git.error.code, `existing project CLI status --json exited ${exit}${detail ? `: ${detail}` : ''}. Trusted Git inspection: ${git.error.message}. ${next}`);
+      return fail(git.error.code, `bundled shared CLI status --json exited ${exit}${detail ? `: ${detail}` : ''}. Trusted Git inspection: ${git.error.message}. ${next}`);
     }
     if (git.status === 'non-repository') {
       return fail('NOT_GIT_WORKTREE', `existing AKE files remain untouched; status matched a supported legacy/current no-Git diagnostic and independent Git inspection confirmed no repository at ${target}. Use the Skill Git-selection flow only if the user chooses it; after success, rerun preflight, not bootstrap apply.`);
     }
-    return fail('STATUS_FAILED', `existing project CLI status --json exited ${exit}${detail ? `: ${detail}` : ''}; independent Git inspection found a valid ${git.status} (${git.root}), contradicting the no-Git diagnostic. Do not initialize Git.`);
+    return fail('STATUS_FAILED', `bundled shared CLI status --json exited ${exit}${detail ? `: ${detail}` : ''}; independent Git inspection found a valid ${git.status} (${git.root}), contradicting the no-Git diagnostic. Do not initialize Git.`);
   }
 
   let report;
   try { report = JSON.parse(result.stdout); }
-  catch { return fail('STATUS_INVALID_JSON', 'existing project CLI status --json did not return valid JSON on stdout.'); }
-  if (!report || typeof report !== 'object' || Array.isArray(report)) return fail('STATUS_INVALID_JSON', 'existing project CLI status --json did not return a JSON object.');
+  catch { return fail('STATUS_INVALID_JSON', 'bundled shared CLI status --json did not return valid JSON on stdout.'); }
+  if (!report || typeof report !== 'object' || Array.isArray(report)) return fail('STATUS_INVALID_JSON', 'bundled shared CLI status --json did not return a JSON object.');
   if (typeof report.project !== 'string' || !report.project.trim()) return fail('PROJECT_FIELD_MISSING', 'status JSON has no non-empty project path; target identity cannot be checked.');
   if (!path.isAbsolute(report.project)) return fail('PROJECT_PATH_RELATIVE', `status reported a relative project path ${JSON.stringify(report.project)}; an absolute path is required.`);
 
@@ -211,7 +224,7 @@ function main() {
   }
   if (reportedProject !== target) return fail('PROJECT_MISMATCH', `status resolved to ${reportedProject}, not the requested target ${target}; stop before any write.`);
   console.log(`PROJECT_OK: existing CLI status --json resolved to the requested project ${target}. This verifies project selection only; it does not verify any task command.`);
-  try { console.log(`VERSION_ADVISORY: ${JSON.stringify(versionAdvisory(target, report, configState.path))}`); }
+  try { console.log(`VERSION_ADVISORY: ${JSON.stringify(versionAdvisory(target, configState.path))}`); }
   catch { /* Advisory failures must not block a verified project selection. */ }
   return 0;
 }

@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),cli=path.join(root,'scripts/ake.mjs');
-test('AKE Skill instructs visible retrieval/capture and structured final report',async()=>{const skill=await readFile(path.join(root,'skills/ake/SKILL.md'),'utf8');for(const phrase of ['用户可见通知','同一阶段连续进行的多次搜索/候选命令合并','Agent Teams 由 Lead/任务 owner 统一发用户通知','AKE · 本次无新增知识','用户可见最终报告','Agent Note','Defensive Pattern','Postmortem','Cookbook','授权/发布','验证：','禁止盲目重试','candidate show <id>','.ake/publish-log.jsonl','publish <id> --reconcile','参数解析阶段拒绝'])assert.ok(skill.includes(phrase),phrase)});
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),cli=path.join(root,'scripts/ake.mjs'),sharedCli=path.join(root,'skills/ake/resources/ake-source/scripts/ake.mjs');
+test('AKE Skill instructs visible retrieval/capture and structured final report',async()=>{const skill=await readFile(path.join(root,'skills/ake/SKILL.md'),'utf8');for(const phrase of ['用户可见通知','同一阶段连续进行的多次搜索/候选命令合并','Agent Teams 由 Lead/任务 owner 统一发用户通知','AKE · 本次无新增知识','用户可见最终报告','Agent Note','Defensive Pattern','Postmortem','Cookbook','授权/发布','验证：','禁止盲目重试','candidate show <id>','.ake/publish-log.jsonl','publish <id> --reconcile','参数解析阶段拒绝'])assert.ok(skill.includes(phrase),phrase);assert.doesNotMatch(skill,/知识目录、配置、项目内 CLI/);assert.doesNotMatch(skill,/会执行既有项目代码的 preflight/);assert.doesNotMatch(skill,/AKE 源码 checkout CLI（开发\/初始化时）/);assert.match(skill,/项目操作统一使用 Skill 随附共享 CLI/);assert.match(skill,/不作为目标项目操作入口/)});
 test('AKE Skill handles unknown publish results with configured ledger and refuses unsafe recovery',async()=>{
  const skill=await readFile(path.join(root,'skills/ake/SKILL.md'),'utf8');
  for(const phrase of ['读取项目 `.ake/config.json` 的 `publishLog`','仅当有效配置中该字段不存在时才使用默认 `.ake/publish-log.jsonl`','旧版 CLI 不支持 reconcile','状态不符或任何状态无法确认时','停止并报告需人工处理','publish <id> --reconcile','参数解析阶段拒绝'])assert.ok(skill.includes(phrase),phrase);
@@ -68,12 +68,12 @@ test('init preserves existing Skills and isolates project knowledge',async t=>{
   const existing=path.join(project,'.agents/skills/ake/SKILL.md');if(name==='two'){await mkdir(path.dirname(existing),{recursive:true});await writeFile(existing,'project custom');}
   x=run(root,'init','--dir',project,...(name==='two'?['--skill-scope','user']:[]));assert.equal(x.status,0,x.stderr+' '+x.stdout);assert.match(x.stdout,/Install the ake Skill separately/);
   assert.equal(await readFile(legacy,'utf8'),'legacy custom');if(name==='two')assert.equal(await readFile(existing,'utf8'),'project custom');else await assert.rejects(access(existing));
-  const local=path.join(project,'.ake/tools/scripts/ake.mjs');
-  const result=spawnSync(process.execPath,[local,'status','--json'],{cwd:project,env,encoding:'utf8'});assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).project,await realpath(project));
+   await assert.rejects(access(path.join(project,'.ake/tools/scripts/ake.mjs')),{code:'ENOENT'});
+   const result=spawnSync(process.execPath,[sharedCli,'status','--json','--project',project],{cwd:project,env,encoding:'utf8'});assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).project,await realpath(project));
   await writeFile(path.join(project,'docs/cookbook',`${name}.md`),`# uniquely${name}token\n`);
  }
- const one=path.join(base,'one'),local=path.join(one,'.ake/tools/scripts/ake.mjs');
- const search=spawnSync(process.execPath,[local,'search','uniquelytwotoken','--json'],{cwd:one,env,encoding:'utf8'});assert.equal(search.status,0,search.stderr);assert.equal(JSON.parse(search.stdout).results.length,0);
+  const one=path.join(base,'one');
+  const search=spawnSync(process.execPath,[sharedCli,'search','uniquelytwotoken','--json','--project',one],{cwd:one,env,encoding:'utf8'});assert.equal(search.status,0,search.stderr);assert.equal(JSON.parse(search.stdout).results.length,0);
  x=run(root,'init','--dir',one,'--skill-scope','project');assert.equal(x.status,2);assert.match(x.stderr,/npx skills add/);
  assert.equal(await readFile(old,'utf8'),'user custom');assert.equal(await readFile(shared,'utf8'),'user custom');
 });
