@@ -268,9 +268,11 @@ test('existing project config and CLI are preserved without upgrade', async (t) 
   await writeFile(path.join(target, '.ake/config.json'), config);
   await writeFile(path.join(target, '.ake/tools/scripts/ake.mjs'), cli);
 
+  const bundledMetadata = JSON.parse(await readFile(path.join(installedSkill, 'resources/ake-source/package.json'), 'utf8'));
+  assert.notEqual(bundledMetadata.version, '0.0.9');
   const result = run(bootstrap, target, root);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /config version 0\.0\.9 differs from bundled metadata version 0\.2\.1/);
+  assert.ok(result.stdout.includes(`config version 0.0.9 differs from bundled metadata version ${bundledMetadata.version}`), result.stdout);
   assert.match(result.stdout, /project CLI was not executed/);
   assert.deepEqual(await readFile(path.join(target, '.ake/config.json')), config);
   assert.deepEqual(await readFile(path.join(target, '.ake/tools/scripts/ake.mjs')), cli);
