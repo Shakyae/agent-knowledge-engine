@@ -183,7 +183,10 @@ test('static Skill contract specifies Lead-mediated exact-target text fallback',
   assert.match(architecture, /Only the user's explicit reply `1` to that prompt authorizes the helper/);
   assert.match(architecture, /without transferring consent or execution to a child Agent/);
   assert.match(architecture, /do not prove real DSH native-choice or Lead text-fallback behavior/);
-  assert.match(cookbook, /The Lead freshly inspects the target and directly runs the helper/);
+  assert.match(cookbook, /Before displaying the choice, the Lead freshly inspects the target and shows its exact canonical path; after the user's path-specific choice, the Lead passes that same pre-choice canonical target and identity to the helper/);
+  assert.match(cookbook, /The helper rechecks identity and Git state and refuses to initialize if either changed; do not substitute a new identity/);
+  assert.match(cookbook, /plain-text options are allowed only if that capability is unavailable, never to bypass an explicit policy\/permission denial/);
+  assert.match(cookbook, /refusal, skip, missing, ambiguous, or any other reply is not consent/);
   assert.match(readme, /only the Lead asks the user and runs `init-git\.mjs`/);
   assert.match(readme, /the Lead freshly inspects the target and uses that inspection identity/);
   assert.match(readme, /consent and execution are not relayed to a child Agent/);

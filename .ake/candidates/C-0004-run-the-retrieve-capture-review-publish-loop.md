@@ -1,21 +1,21 @@
 ---
 akeCandidate:
   id: "C-0004"
-  revision: 2
+  revision: 3
   kind: "cookbook"
   title: "Run the retrieve → capture → review → publish loop"
   author: "executor"
   created: "2026-11-26"
-  status: "reviewed"
+  status: "published"
   target: "docs/cookbook/agent-task-knowledge-workflow.md"
   operation: "update"
   targetHash: "43cee57d8eff7b4e23d950a8221604023c4d10bade99d1df20156d3cc433c84a"
-  contentHash: "2777b6d8cb6fd12e13502245324943141a7c18c0233daefec5e6524e16e71de4"
+  contentHash: "41a40aa911ec5ece169feb9d4f6752d67fc5e5cf5a6aa9620ce564dfa5c38b34"
   scope: ["an agent doing a development task in a project initialized for AKE"]
   evidence: ["skills/ake/SKILL.md","docs/architecture.md","skills/ake/preflight.mjs","skills/ake/resources/ake-source/scripts/ake.mjs","skills/ake/resources/ake-source/src/lib/search.mjs","tests/integration/skill-bootstrap.test.mjs","tests/integration/skill-install.test.mjs"]
-  reviews: [{"reviewer":"fullstack-advisor","mode":"independent","verdict":"approve","contentHash":"2777b6d8cb6fd12e13502245324943141a7c18c0233daefec5e6524e16e71de4","target":"docs/cookbook/agent-task-knowledge-workflow.md","targetHash":"43cee57d8eff7b4e23d950a8221604023c4d10bade99d1df20156d3cc433c84a","operation":"update","at":"2026-11-26T14:42:02.614Z","notes":"Independent re-review revision 2: initial per-kind frontmatter, four-kind notice and stage-trigger findings are addressed; checked candidate body against current Skill and architecture, target scope, recorded evidence, binding and format. candidate check reports no errors or drift. PASS WITH LIMITATIONS: verified remains pending; this is static contract and recorded CLI check, not a live host, reviewer-adherence or installer test. Explicit user authorization remains required before approval and publication."}]
-  approval: null
-  publication: null
+  reviews: [{"reviewer":"fullstack-advisor","mode":"independent","verdict":"approve","contentHash":"41a40aa911ec5ece169feb9d4f6752d67fc5e5cf5a6aa9620ce564dfa5c38b34","target":"docs/cookbook/agent-task-knowledge-workflow.md","targetHash":"43cee57d8eff7b4e23d950a8221604023c4d10bade99d1df20156d3cc433c84a","operation":"update","at":"2026-11-26T20:44:03.835Z","notes":"PASS WITH LIMITATIONS: revision 3 states relevant evidence boundaries in the publishable body; core workflow and format claims are supported by direct Skill, architecture and source evidence, with prior executed integration evidence limited to its reported paths. Candidate check reports no format errors or binding drift. This review does not establish real third-party distribution, DSH loading, live user/reviewer adherence, or every workflow stage; verified remains pending. Review approval is not user authorization or publication approval."}]
+  approval: {"by":"user","mode":"human","at":"2026-11-26T20:52:00.228Z","contentHash":"41a40aa911ec5ece169feb9d4f6752d67fc5e5cf5a6aa9620ce564dfa5c38b34","target":"docs/cookbook/agent-task-knowledge-workflow.md","targetHash":"43cee57d8eff7b4e23d950a8221604023c4d10bade99d1df20156d3cc433c84a","operation":"update"}
+  publication: {"at":"2026-11-26T20:52:05.744Z","contentHash":"41a40aa911ec5ece169feb9d4f6752d67fc5e5cf5a6aa9620ce564dfa5c38b34","target":"docs/cookbook/agent-task-knowledge-workflow.md","previousTargetHash":"43cee57d8eff7b4e23d950a8221604023c4d10bade99d1df20156d3cc433c84a"}
   supersededBy: null
 ---
 <!-- body -->
@@ -69,6 +69,7 @@ You are starting a development task in an AKE-initialized project, or have just 
 - `candidate check` reports format, binding drift, duplicate-id and similarity information; the author must not describe this self-check as independent review.
 - A stale target binding requires a revised candidate and fresh review; do not bypass the hash gate.
 - Use the shared CLI with explicit `--project <absolute-target>` for project validation; no per-project CLI is installed or upgraded.
+- Evidence boundary: the listed Skill/source files and existing integration tests provide static contract evidence and executed evidence for their covered paths; this candidate does not claim every stage was live-run. Those references do not establish real third-party Skill distribution/installation, DSH host loading, or live user/reviewer interaction and adherence. Keep `verified: pending` and do not generalize these external-path limitations to the paths supported by source and tests.
 
 ## Related
 
