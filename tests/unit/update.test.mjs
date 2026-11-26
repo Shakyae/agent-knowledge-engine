@@ -9,6 +9,15 @@ import { runGit, resolveRemote } from '../../src/lib/git-remote.mjs';
 import { assertOutsideGitWorkTree, cleanTestEnv, tempRoot } from '../helpers/test-env.mjs';
 
 const sha = 'a'.repeat(40);
+test('test environment import clears inherited path overrides but preserves explicit injection', () => {
+  const helperUrl = new URL('../helpers/test-env.mjs', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--import', helperUrl, '-e', 'process.stdout.write(process.env.XDG_CONFIG_HOME ?? "<unset>")'], {
+    env: cleanTestEnv({ XDG_CONFIG_HOME: '/runner/xdg-config' }), encoding: 'utf8'
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, '<unset>');
+  assert.equal(cleanTestEnv({ XDG_CONFIG_HOME: '/explicit/negative-test' }).XDG_CONFIG_HOME, '/explicit/negative-test');
+});
 async function makeWorkDir(prefix) { return tempRoot(prefix); }
 async function updateRoots(t, prefix) {
   const root = await makeWorkDir(prefix); t.after(() => rm(root, { recursive: true, force: true }));
@@ -312,8 +321,8 @@ test('nonempty agent path overrides refuse before identity or network without to
     assert.equal((await lstat(link)).isSymbolicLink(), true);
   }
   let called = false;
-  const alternate = await runUpdate({ flags: { dryRun: true, json: true }, package: { repository: { url: 'https://github.com/o/r.git' } }, env: {}, installationOptions: { env: { CODEX_HOME: outside } }, resolveInstallation: async () => { called = true; } });
-  assert.equal(alternate.errorCode, 'IDENTITY_AMBIGUOUS'); assert.equal(called, false);
+  const alternate = await runUpdate({ flags: { dryRun: true, json: true }, package: { repository: { url: 'https://github.com/o/r.git' } }, env: {}, installationOptions: { env: { XDG_CONFIG_HOME: outside } }, resolveInstallation: async () => { called = true; } });
+  assert.equal(alternate.errorCode, 'IDENTITY_AMBIGUOUS'); assert.match(alternate.message, /XDG_CONFIG_HOME/); assert.equal(called, false);
   let identityOrRemote = false;
   const whitespace = await runUpdate({ flags: { dryRun: false, json: true }, package: { repository: { url: 'https://github.com/o/r.git' } }, env: { CODEX_HOME: '  ' }, installationOptions: { env: {} },
     resolveInstallation: async () => { identityOrRemote = true; }, resolveRemote: async () => { identityOrRemote = true; } });
@@ -327,10 +336,10 @@ test('nonempty agent path overrides refuse before identity or network without to
 test('default process environment overrides refuse without identity or remote work', () => {
   const moduleUrl = new URL('../../src/lib/update.mjs', import.meta.url).href;
   const script = `import {runUpdate} from ${JSON.stringify(moduleUrl)}; let called=false; const result=await runUpdate({flags:{dryRun:false,json:true},package:{repository:{url:'https://github.com/o/r.git'}},resolveInstallation:async()=>{called=true},resolveRemote:async()=>{called=true}}); console.log(JSON.stringify({result,called}));`;
-  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: cleanTestEnv({ CODEX_HOME: ' ' }) });
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: cleanTestEnv({ XDG_CONFIG_HOME: '/explicit/process-xdg' }) });
   assert.equal(child.status, 0, child.stderr);
   const { result, called } = JSON.parse(child.stdout);
-  assert.equal(result.errorCode, 'IDENTITY_AMBIGUOUS'); assert.match(result.message, /CODEX_HOME/); assert.equal(called, false);
+  assert.equal(result.errorCode, 'IDENTITY_AMBIGUOUS'); assert.match(result.message, /XDG_CONFIG_HOME/); assert.equal(called, false);
 });
 
 test('Skills environment removes inherited agent-specific home overrides', async () => {
