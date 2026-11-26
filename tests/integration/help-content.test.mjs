@@ -28,11 +28,13 @@ function usageSubcommands() {
   return commands;
 }
 
-test('help shows the supported status JSON form', () => {
+test('help declares search selector and option forms required by the Skill', async () => {
   const result = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^ake status \[--json\]$/m);
-  assert.match(result.stdout, /^ake search <terms> .*--status STATUS.*--budget-bytes N/m);
+  assert.match(result.stdout, /^ake search <terms> .*--status STATUS.*--budget-bytes N.*--json.*--project DIR/m);
+  const skillText = await readFile(skill, 'utf8');
+  assert.match(skillText, /search <terms> \[options\] --project <absolute-target> --json/);
 });
 
 test('/ake and /ake help both display help instead of starting knowledge capture', async () => {

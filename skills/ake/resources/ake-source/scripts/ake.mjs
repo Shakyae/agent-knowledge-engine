@@ -15,12 +15,12 @@ import { printResult, printValidation, printSuccess, printFailure } from '../src
 import { readInstallation, installationText } from '../src/lib/installation.mjs';
 import { parseUpdateArgs, runUpdate, runProductionUpdate, updateExitCode } from '../src/lib/update.mjs';
 import { nodeVersionFailure, formatNodeVersionError, nodeVersionCliFailure, updateVersionFailure } from '../src/lib/runtime.mjs';
-const CLI_VERSION = '0.3.0'; // Version of these executable bytes, not the project configuration schema.
+const CLI_VERSION = '0.4.0'; // Version of these executable bytes, not the project configuration schema.
 const usage=`ake version [--json] — report this CLI's own version without accessing a project
 ake init [--dir DIR] [--dry-run] [--merge-agents] — initialize the current working directory by default; --dir is optional (run from the AKE repository)
 ake update [--dry-run] [--json] [--accept-customized]
-Install the Skill separately: npx skills add <AKE-source> --skill ake -g -a codex -a claude-code
-ake search <terms> [--limit N] [--type TYPE] [--status STATUS] [--budget-bytes N] [--include-candidates] [--json]
+Install the Skill separately: npx skills add Shakyae/agent-knowledge-engine@<full-commit-sha> --skill ake -g
+ake search <terms> [--limit N] [--type TYPE] [--status STATUS] [--budget-bytes N] [--include-candidates] [--json] [--project DIR]
 ake validate [--project DIR] [--path FILE] [--json]
 ake candidate new --kind KIND --title TITLE --author NAME --target PATH --body FILE
 ake candidate submit <id> | list | show <id> | check <id>\nake candidate revise <id> --body FILE
