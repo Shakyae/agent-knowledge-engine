@@ -6,7 +6,7 @@ import { mkdir, writeFile, rm, readFile, readdir, cp, lstat, symlink, readlink, 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { createBackup, restoreBackup } from '../../src/lib/install-backup.mjs';
+import { createBackup } from '../../src/lib/install-backup.mjs';
 import { acquirePinnedSkillsCli, makeSkillsEnvironment, runUpdate, updateExitCode, verifyInstalled } from '../../src/lib/update.mjs';
 import { resolveRemote, runGit } from '../../src/lib/git-remote.mjs';
 import { cleanTestEnv, tempRoot } from '../helpers/test-env.mjs';
@@ -94,7 +94,7 @@ test('anchor acquisition failure reports BACKUP and does not run installer or re
   assert.equal(await readFile(path.join(f.canonical, 'SKILL.md'), 'utf8'), '---\\nname: ake\\n---\\n# old\\n');
 });
 
-test('rollback preserves concurrent non-snapshot skill entries and retains backup with exact warnings', async t => {
+test('failed installation preserves concurrent entries and backup', async t => {
   const f = await rollbackFixture(t, 'ake-rollback-preserve-', { skills: { ake: { sourceType: 'local', source: '/legacy' }, other: { ref: 'keep' } } });
   const userNote = path.join(f.agentsHome, 'skills', 'user-note.txt'), otherSkill = path.join(f.agentsHome, 'skills', 'other-skill');
   const result = await runUpdate({ home: f.home, package: { repository: { url: 'https://github.com/o/r.git' } }, flags: { dryRun: false, json: true, acceptCustomized: true },
@@ -141,7 +141,7 @@ test('copy fallback after installer start preserves copied path and backup witho
   assert.equal(restored || cleaned, false);
 });
 
-test('rollback preserves a concurrent AKE symlink absent from the snapshot', async t => {
+test('failed installation preserves a concurrent AKE symlink', async t => {
   const f = await rollbackFixture(t, 'ake-rollback-symlink-');
   const claudeSkills = path.join(f.home, '.claude', 'skills'), claudeAke = path.join(claudeSkills, 'ake'); await mkdir(claudeSkills, { recursive: true });
   const target = path.relative(path.dirname(claudeAke), f.canonical);
@@ -154,17 +154,7 @@ test('rollback preserves a concurrent AKE symlink absent from the snapshot', asy
   await lstat(result.backupPath).then(info => assert.equal(info.isDirectory(), true));
 });
 
-test('rollback restores an explicitly snapshotted existing AKE symlink', async t => {
-  const f = await rollbackFixture(t, 'ake-rollback-existing-link-');
-  const claudeSkills = path.join(f.home, '.claude', 'skills'), claudeAke = path.join(claudeSkills, 'ake'); await mkdir(claudeSkills, { recursive: true });
-  const target = path.relative(path.dirname(claudeAke), f.canonical); await symlink(target, claudeAke);
-  const backup = await createBackup({ agentsHome: f.agentsHome, installation: f.installation, lockPath: f.lockPath, targetCommit: '4'.repeat(40) });
-  await rm(claudeAke); await writeFile(path.join(f.canonical, 'SKILL.md'), 'half-installed');
-  assert.equal(await restoreBackup(backup), true); assert.equal((await lstat(claudeAke)).isSymbolicLink(), true);
-  assert.equal(await readlink(claudeAke), target);
-});
-
-test('rollback rejects top-level lock drift without overwriting user state and keeps backup', async t => {
+test('failed installation preserves top-level lock drift and backup', async t => {
   const original = { version: 1, dismissed: {}, lastSelectedAgents: ['codex'], skills: { ake: { sourceType: 'local', source: '/legacy' }, other: { ref: 'keep' } } };
   const f = await rollbackFixture(t, 'ake-rollback-lock-drift-', original);
   const concurrent = Buffer.from(JSON.stringify({ ...original, dismissed: { other: 'new user state' }, lastSelectedAgents: ['claude-code'], skills: { ake: { sourceType: 'github', ref: '2'.repeat(40) }, other: { ref: 'keep' } } }));
@@ -200,7 +190,7 @@ test('Claude and CodeBuddy linked topology dry-run leaves HOME unchanged', async
   assert.equal(dry.status, 'dry_run', JSON.stringify(dry)); assert.match(dry.message, /no installation changes/);
   assert.deepEqual(dry.installationBefore.agentPaths.map(item => item.path), [canonical, claude, buddy]);
   assert.deepEqual(await treeSnapshot(home), before);
-  assert.equal(acquired || backed || installed, false); assert.deepEqual(await treeSnapshot(home), before);
+  assert.equal(acquired || backed || installed, false);
   await unlink(claude);
   const onlyBuddy = await runUpdate({ ...base, flags: { dryRun: true, json: true } });
   assert.equal(onlyBuddy.errorCode, 'IDENTITY_AMBIGUOUS');
@@ -530,7 +520,7 @@ test('copied user-level CLI dry-run emits one JSON report without installation w
   assert.equal(status.status, 0, status.stderr); assert.equal(JSON.parse(status.stdout).installation.canonicalPath, await import('node:fs/promises').then(fs => fs.realpath(customSkill)));
 });
 
-test('isolated bare repository fixture and PATH Skills stub exercise update dispatch and rollback', async t => {
+test('isolated bare repository fixture and PATH Skills stub exercise update dispatch and failure preservation', async t => {
   const root = await makeWorkDir('ake-update-flow-');
   t.after(() => rm(root, { recursive: true, force: true }));
   const home = path.join(root, 'home'), repo = path.join(root, 'repo'), bin = path.join(root, 'bin');
@@ -557,7 +547,6 @@ test('isolated bare repository fixture and PATH Skills stub exercise update disp
     resolveInstallation: async () => installation, resolveRemote: async () => ({ sourceUrl: 'https://github.com/o/r.git', repo: 'o/r', defaultBranch: 'main', targetCommit: sha, entries: Object.entries(targetFiles).map(([relativePath, bytes]) => ({ relativePath, bytes, mode: '100644', type: 'blob' })) }),
     detectCustomization: async () => 'clean', acquireLock: async () => ({ release: async () => {} }),
     createBackup: args => createBackup(args),
-    restoreBackup: (backup, args) => restoreBackup(backup, args),
     skillsCli: stubPath, runSkillsAdd: async (cmd, args, spawnOptions) => { captured = args; const { spawnSync } = await import('node:child_process'); const result = spawnSync(process.execPath, [cmd, ...args], { cwd: root, env: { ...spawnOptions.env, STUB_MODE: stubBehavior, AKE_TEST_CANONICAL: install, AKE_TEST_AGENTS: agentsHome, AKE_TEST_TARGET: sha, AKE_TEST_TARGETS: JSON.stringify(targetFiles), AKE_TEST_LOCK: lockPath }, encoding: 'utf8' }); if (result.status !== 0) throw Object.assign(new Error(`stub failed after possible partial write (status=${result.status}, error=${result.error?.message ?? ''}, stderr=${result.stderr ?? ''})`), { code: 'INSTALL' }); },
     verifyInstalled: async () => { throw new Error('verification deliberately fails after successful install'); } };
   const result = await runUpdate(options);

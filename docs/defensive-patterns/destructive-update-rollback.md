@@ -11,38 +11,15 @@ ake:
 
 # Destructive update and rollback defensive patterns
 
-## Restore only what the snapshot can account for
+## Preserve state for manual recovery
 
-An update that replaces files in place must be able to undo itself from a recorded
-snapshot. A rollback may therefore rewrite or delete only paths that the snapshot
-actually captured: the installed tree, the links that existed before the update, and
-the lock file's recorded bytes or recorded absence. Anything else that appears during
-the update window may have been created by a concurrent user or a third-party tool.
-The update process cannot prove who created it, so it must leave it untouched, list it
-in the report, and treat the rollback as incomplete rather than silently "restoring" a
-state that destroys it. The same rule applies to a lock file: compare the whole object
-(ignoring only the entry this tool owns) and refuse to write the old bytes when any
-other field drifted.
+Require a maintenance window: the user stops other AKE writers throughout the update. The cooperative lock does not constrain other programs and in-place installation is not atomic. If the installer may have started and fails or its result is uncertain, retain the live state and verified backup; do not automatically restore, clean up the backup, or blindly retry. Keep writers stopped, inspect the manifest and backup data against the live tree, links and lock, save a separate copy of the live state, and reconcile manually only after reviewing the differences and backup integrity.
 
-**Prevents:** a rollback that deletes a user's file, directory or symlink created while
-the installer was running, or that overwrites concurrent changes to unrelated lock
-entries because the comparison only looked at the tool's own subtree.
+**Prevents:** automatic recovery overwriting changes whose origin cannot be established.
 
-**Reviewer check:** for every path the restore path deletes or rewrites, ask "is this
-path present in the snapshot taken before the update?" If the answer is not provably
-yes, the operation must be a refusal with the exact path reported and the backup
-retained. Then create a concurrent file, directory and symlink during a simulated
-install failure and confirm all three survive the rollback.
+**Reviewer check:** simulate installation failure and concurrent changes; verify the live state and backup are retained without recovery or cleanup, and the report identifies the backup and manual recovery steps.
 
-**Boundary:** the check covers only the tool's own update window and its own recorded
-snapshot. It cannot prove that pre-existing content was not already compromised, and it
-does not coordinate with processes that ignore the tool's lock. A rollback that leaves
-unknown entries in place reports itself as failed on purpose; an operator must review
-the retained paths and the kept backup. Evidence comes from isolated macOS tests
-(Node v26.13.0, real filesystem, simulated install failures); Windows path and locking
-behaviour and real process interruption or crash recovery during an update were not
-verified, so the rule is stated as a requirement rather than a property proven on every
-platform.
+**Boundary:** isolated tests simulate failures; they do not prove crash recovery or coordination with non-cooperating writers. Backup consistency is not authentication.
 
 ## Validate a backup against its data tree, not only its manifest
 

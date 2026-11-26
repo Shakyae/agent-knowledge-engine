@@ -23,7 +23,7 @@ test('CLI reports its own version without project and matches release metadata',
 
 test('Skill documents advisory choices, session deduplication and no unauthorized upgrade', async () => {
   const skill = await readFile(path.join(root, 'skills/ake/SKILL.md'), 'utf8');
-  for (const marker of ['同一差异只提示一次', '现在升级（先备份和人工审阅差异）', '暂不升级', '不要在选择之前写项目', '仅用户明确选择现在升级', '不是宿主强制']) assert.ok(skill.includes(marker), marker);
+  for (const marker of ['同一差异只提示一次', '审阅升级方案', '暂不升级', '不要在选择之前写项目', '取得对实际写入的明确授权', '不是宿主强制']) assert.ok(skill.includes(marker), marker);
 });
 
 test('real legacy project CLI remains unknown despite config and bundle versions', async t => {
