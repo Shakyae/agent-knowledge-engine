@@ -157,32 +157,84 @@ test('CLI and standalone Skill helpers enforce the runtime before task work', as
 
   if (process.platform === 'win32' && supported) {
     const identity = value => { const info = statSync(value, { bigint: true }); return `${info.dev}:${info.ino}:${info.birthtimeNs}`; };
-    const shortPathScript = path.join(temp, 'print-8dot3-path.cmd');
-    await writeFile(shortPathScript, '@echo off\r\nfor %%I in ("%~1") do @echo %%~sI\r\n');
+    const shortPathScript = path.join(temp, 'print-8dot3-path.ps1');
+    await writeFile(shortPathScript, `$ErrorActionPreference = 'Stop'
+$encodedPath = [Console]::In.ReadToEnd()
+$longPath = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encodedPath))
+Add-Type -TypeDefinition @'
+using System.Text;
+using System.Runtime.InteropServices;
+public static class AkePathProbe {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetShortPathName(string path, StringBuilder output, uint capacity);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetLongPathName(string path, StringBuilder output, uint capacity);
+}
+'@
+$shortCapacity = 260
+while ($true) {
+    $shortBuffer = [System.Text.StringBuilder]::new($shortCapacity)
+    $shortLength = [AkePathProbe]::GetShortPathName($longPath, $shortBuffer, [uint32]$shortCapacity)
+    if ($shortLength -eq 0) { throw "GetShortPathName failed with Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+    if ($shortLength -lt $shortCapacity) { break }
+    $shortCapacity = [int]$shortLength + 1
+}
+$shortPath = $shortBuffer.ToString()
+$longCapacity = 260
+while ($true) {
+    $longBuffer = [System.Text.StringBuilder]::new($longCapacity)
+    $longLength = [AkePathProbe]::GetLongPathName($shortPath, $longBuffer, [uint32]$longCapacity)
+    if ($longLength -eq 0) { throw "GetLongPathName failed with Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
+    if ($longLength -lt $longCapacity) { break }
+    $longCapacity = [int]$longLength + 1
+}
+$hasShortAlias = -not [String]::Equals($shortPath, $longBuffer.ToString(), [StringComparison]::OrdinalIgnoreCase)
+$payload = $longPath + [Environment]::NewLine + $shortPath + [Environment]::NewLine + $hasShortAlias.ToString().ToLowerInvariant()
+[Console]::Out.WriteLine([Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($payload)))
+`, 'utf8');
+    const powershell = path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    // Path bytes go only through stdin as base64; neither cmd nor PowerShell parses the target as source text.
     const shortPathFor = directory => {
-      const result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/c', shortPathScript, directory], { cwd: temp, encoding: 'utf8', env: cleanTestEnv() });
-      assert.equal(result.status, 0, result.stderr);
+      const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', shortPathScript], { cwd: temp, encoding: 'utf8', input: Buffer.from(directory, 'utf8').toString('base64'), env: cleanTestEnv(), windowsHide: true });
+      assert.equal(result.status, 0, result.error?.message ?? result.stderr);
       const lines = result.stdout.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-      assert.equal(lines.length, 1, `short-path command must emit exactly one path: ${JSON.stringify({ stdout: result.stdout, stderr: result.stderr })}`);
-      const value = lines[0];
-      assert.ok(path.win32.isAbsolute(value), `short-path command returned a non-absolute path for ${directory}: ${JSON.stringify(value)}`);
-      assert.doesNotMatch(value, /["\r\n]/, `short-path command returned quotes or line breaks: ${JSON.stringify(value)}`);
+      assert.equal(lines.length, 1, `short-path helper must emit exactly one base64 path: ${JSON.stringify({ stdout: result.stdout, stderr: result.stderr })}`);
+      assert.match(lines[0], /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/, 'short-path helper output must be base64 only');
+      const decoded = Buffer.from(lines[0], 'base64').toString('utf8');
+      const [roundTrippedRequest, value, shortAliasFlag, ...extraLines] = decoded.split(/\r?\n/);
+      assert.equal(roundTrippedRequest, directory, 'stdin base64 must preserve the requested Unicode path exactly');
+      assert.equal(extraLines.length, 0, `short-path helper returned unexpected fields: ${JSON.stringify(decoded)}`);
+      assert.ok(['true', 'false'].includes(shortAliasFlag), `short-path helper alias flag is invalid: ${JSON.stringify(shortAliasFlag)}`);
+      assert.ok(path.win32.isAbsolute(value), `short-path helper returned a non-absolute path for ${directory}: ${JSON.stringify(value)}`);
+      assert.doesNotMatch(value, /["\r\n]/, `short-path helper returned quotes or line breaks: ${JSON.stringify(value)}`);
       assert.equal(identity(value), identity(directory), `short-path output does not identify the requested directory: ${JSON.stringify({ directory, value })}`);
-      const requestedComponents = path.win32.normalize(directory).split('\\'), returnedComponents = path.win32.normalize(value).split('\\');
-      const hasShortName = returnedComponents.some((component, index) => /~[0-9]+$/i.test(component) && component.toLowerCase() !== requestedComponents[index]?.toLowerCase());
-      return { value, hasShortName };
+      return { value, hasShortName: shortAliasFlag === 'true', roundTrippedRequest };
     };
     const injectionSentinel = path.join(temp, 'ake-cmd-injection-sentinel');
     await assert.rejects(access(injectionSentinel), { code: 'ENOENT' });
-    const hostileDirectory = path.join(temp, 'space & mkdir ake-cmd-injection-sentinel percent%TEMP% bang! caret^ parentheses(1)'); await mkdir(hostileDirectory);
-    shortPathFor(hostileDirectory);
-    await assert.rejects(access(injectionSentinel), { code: 'ENOENT' }, 'cmd metacharacters must not create the isolated injection sentinel');
+    const hostileDirectory = path.join(temp, 'space Unicode-雪 & mkdir ake-cmd-injection-sentinel percent%TEMP% bang! caret^ parentheses(1)'); await mkdir(hostileDirectory);
+    const hostilePath = shortPathFor(hostileDirectory);
+    console.log(`Windows hostile path probe: ${JSON.stringify({ requested: hostileDirectory, roundTrippedRequest: hostilePath.roundTrippedRequest, returned: hostilePath.value, hasShortAlias: hostilePath.hasShortName })}`);
+    await assert.rejects(access(injectionSentinel), { code: 'ENOENT' }, 'path metacharacters must not execute commands that create the isolated sentinel');
+    const projectAlias = path.join(temp, 'bootstrap-project alias 雪'); await symlink(bootstrapTarget, projectAlias, 'junction');
+    const projectAliasPath = shortPathFor(projectAlias);
+    console.log(`Windows project junction probe: ${JSON.stringify({ requested: projectAlias, roundTrippedRequest: projectAliasPath.roundTrippedRequest, returned: projectAliasPath.value, hasShortAlias: projectAliasPath.hasShortName })}`);
+    assert.equal(identity(projectAliasPath.value), identity(bootstrapTarget), 'short-path API must preserve a Unicode/spaced junction target identity');
+    const aliasRoot = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', projectAlias, '--dry-run']);
+    assert.equal(aliasRoot.status, 1, aliasRoot.stdout); assert.match(aliasRoot.stderr, /Skill bootstrap resources are incomplete/); assert.doesNotMatch(aliasRoot.stderr, /inconsistent work-tree root/);
+    const aliasChild = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', path.join(projectAlias, 'nested-project'), '--dry-run']);
+    assert.equal(aliasChild.status, 1, aliasChild.stdout); assert.match(aliasChild.stderr, /Skill bootstrap resources are incomplete/); assert.doesNotMatch(aliasChild.stderr, /inconsistent work-tree root/);
+    await assert.rejects(access(path.join(bootstrapTarget, '.ake')), { code: 'ENOENT' }); await assert.rejects(access(path.join(bootstrapChild, '.ake')), { code: 'ENOENT' });
     const gitRootResult = spawnSync('git', ['-C', bootstrapTarget, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env: cleanTestEnv() });
     assert.equal(gitRootResult.status, 0, gitRootResult.stderr);
     const gitRoot = gitRootResult.stdout.trim(), shortTargetInfo = shortPathFor(bootstrapTarget), shortTarget = shortTargetInfo.value;
+    const shortChildInfo = shortPathFor(bootstrapChild), shortChild = shortChildInfo.value;
+    console.log(`Windows GetShortPathName probe: ${JSON.stringify({ root: { requested: bootstrapTarget, roundTrippedRequest: shortTargetInfo.roundTrippedRequest, returned: shortTarget, hasShortAlias: shortTargetInfo.hasShortName }, child: { requested: bootstrapChild, roundTrippedRequest: shortChildInfo.roundTrippedRequest, returned: shortChild, hasShortAlias: shortChildInfo.hasShortName } })}`);
+    assert.notEqual(identity(shortChild), identity(gitRoot), 'nested target must be a distinct directory object');
     if (shortTargetInfo.hasShortName) {
       const diagnostics = {
-        requested: shortTarget,
+        requested: bootstrapTarget,
+        returned: shortTarget,
         targetRealpath: realpathSync(shortTarget),
         targetNativeRealpath: realpathSync.native(shortTarget),
         gitRoot,
@@ -198,23 +250,19 @@ test('CLI and standalone Skill helpers enforce the runtime before task work', as
       assert.equal(shortBootstrap.status, 1, shortBootstrap.stdout);
       assert.match(shortBootstrap.stderr, /Skill bootstrap resources are incomplete/);
       assert.doesNotMatch(shortBootstrap.stderr, /inconsistent work-tree root/);
-      const shortChildInfo = shortPathFor(bootstrapChild), shortChild = shortChildInfo.value;
-      assert.notEqual(identity(shortChild), identity(gitRoot), 'nested target must be a distinct directory object');
-      console.log(`Windows short-path parent probe: ${JSON.stringify({ requested: shortChild, targetIdentity: identity(shortChild), gitRoot, gitRootIdentity: identity(gitRoot), relative: path.win32.relative(realpathSync.native(gitRoot), realpathSync.native(shortChild)) })}`);
+      await assert.rejects(access(path.join(bootstrapTarget, '.ake')), { code: 'ENOENT' });
+    } else {
+      console.log(`No short-path transformation detected for the current Git root; no 8.3 root claim: ${JSON.stringify({ requested: bootstrapTarget, returned: shortTarget })}`);
+    }
+    if (shortChildInfo.hasShortName) {
+      console.log(`Windows short-path child probe: ${JSON.stringify({ requested: bootstrapChild, returned: shortChild, targetIdentity: identity(shortChild), gitRoot, gitRootIdentity: identity(gitRoot), relative: path.win32.relative(realpathSync.native(gitRoot), realpathSync.native(shortChild)) })}`);
       const nestedResult = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', shortChild, '--dry-run']);
       assert.equal(nestedResult.status, 1, nestedResult.stdout);
       assert.match(nestedResult.stderr, /Skill bootstrap resources are incomplete/);
       assert.doesNotMatch(nestedResult.stderr, /inconsistent work-tree root/);
       await assert.rejects(access(path.join(bootstrapChild, '.ake')), { code: 'ENOENT' });
     } else {
-      console.log(`Windows 8.3 short names unavailable; validating equivalent project junction paths instead: ${JSON.stringify({ requested: bootstrapTarget, commandPath: shortTarget })}`);
-      const projectAlias = path.join(temp, 'bootstrap-project-alias'); await symlink(bootstrapTarget, projectAlias, 'junction');
-      const aliasedRoot = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', projectAlias, '--dry-run']);
-      assert.equal(aliasedRoot.status, 1, aliasedRoot.stdout); assert.match(aliasedRoot.stderr, /Skill bootstrap resources are incomplete/); assert.doesNotMatch(aliasedRoot.stderr, /inconsistent work-tree root/);
-      const aliasedChild = run(path.join(skillCopy, 'bootstrap.mjs'), ['--dir', path.join(projectAlias, 'nested-project'), '--dry-run']);
-      assert.equal(aliasedChild.status, 1, aliasedChild.stdout); assert.match(aliasedChild.stderr, /Skill bootstrap resources are incomplete/); assert.doesNotMatch(aliasedChild.stderr, /inconsistent work-tree root/);
-      await assert.rejects(access(path.join(bootstrapTarget, '.ake')), { code: 'ENOENT' });
-      await assert.rejects(access(path.join(bootstrapChild, '.ake')), { code: 'ENOENT' });
+      console.log(`No short-path transformation detected for the current child; no 8.3 child claim: ${JSON.stringify({ requested: bootstrapChild, returned: shortChild })}`);
     }
 
     const tempVolume = path.win32.parse(temp).root, checkoutVolume = path.win32.parse(root).root;
