@@ -583,10 +583,8 @@ export async function runUpdate(options = {}) {
       output.warnings.push(`安装已启动或启动结果未知；未自动恢复或清理备份。请保持其他程序停写，检查当前安装、链接和 lock；核对备份 ${backup.backupPath}/manifest.json 与 data 后，先另存现场，再由人工决定如何恢复，勿盲目覆盖或重试。备份路径：${backup.backupPath}`);
     }
     if (backup && !installStarted) output.warnings.push('安装进程尚未启动；保留已验证备份，不恢复现场');
-    if (output.rollback !== 'failed') {
-      const stages = { USAGE: 'arguments', PREFLIGHT: 'preflight', UNTRUSTED_SOURCE: 'identity', IDENTITY_AMBIGUOUS: 'identity', REMOTE: 'remote', LOCKED: 'lock', CUSTOMIZED_CONFIRMATION_REQUIRED: 'customization', BACKUP: 'backup', INSTALL: 'install', VERIFY: 'verify', DRIFT: 'backup' };
-      report('failed', stages[error.code] ?? 'update', error.code ?? 'UPDATE', error.message);
-    }
+    const stages = { USAGE: 'arguments', PREFLIGHT: 'preflight', UNTRUSTED_SOURCE: 'identity', IDENTITY_AMBIGUOUS: 'identity', REMOTE: 'remote', LOCKED: 'lock', CUSTOMIZED_CONFIRMATION_REQUIRED: 'customization', BACKUP: 'backup', INSTALL: 'install', VERIFY: 'verify', DRIFT: 'backup' };
+    report('failed', stages[error.code] ?? 'update', error.code ?? 'UPDATE', error.message);
   } finally {
     await heldLock?.release().catch(error => output.warnings.push(`could not release lock: ${error.message}`));
     if (npmDirectory) await rm(npmDirectory, { recursive: true, force: true }).catch(error => output.warnings.push(`could not remove controlled npm workspace ${npmDirectory}: ${error.message}`));
