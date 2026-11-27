@@ -1,6 +1,6 @@
 {
   "name": "agent-knowledge-engine",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "Project-level engineering knowledge ops for coding agents: retrieve, capture, review and publish with Markdown, Git and a dependency-free Node CLI.",
   "license": "MIT",

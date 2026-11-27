@@ -37,6 +37,17 @@ test('help declares search selector and option forms required by the Skill', asy
   assert.match(skillText, /search <terms> \[options\] --project <absolute-target> --json/);
 });
 
+test('/ake harvest assesses visible session context without publishing', async () => {
+  const section = helpSection(await readFile(skill, 'utf8'));
+  assert.match(section, /`\/ake harvest`[^\n]*评估当前 Session/);
+  assert.match(section, /查重正式知识与候选/);
+  assert.match(section, /汇报新增、待更新和跳过项/);
+  assert.match(section, /本 Agent 可见且可核对/);
+  assert.match(section, /不会发布/);
+  assert.match(section, /独立审核完成或获得发布授权/);
+  assert.match(section, /无参数 `\/ake` 不解释为知识沉淀任务/);
+});
+
 test('/ake and /ake help both display help instead of starting knowledge capture', async () => {
   const section = helpSection(await readFile(skill, 'utf8'));
   assert.match(section, /`\/ake`[^\n]*显示使用帮助/);

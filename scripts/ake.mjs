@@ -15,7 +15,7 @@ import { printResult, printValidation, printSuccess, printFailure } from '../src
 import { readInstallation, installationText } from '../src/lib/installation.mjs';
 import { parseUpdateArgs, runUpdate, runProductionUpdate, updateExitCode } from '../src/lib/update.mjs';
 import { nodeVersionFailure, formatNodeVersionError, nodeVersionCliFailure, updateVersionFailure } from '../src/lib/runtime.mjs';
-const CLI_VERSION = '0.4.0'; // Version of these executable bytes, not the project configuration schema.
+const CLI_VERSION = '0.4.1'; // Version of these executable bytes, not the project configuration schema.
 const usage=`ake version [--json] — report this CLI's own version without accessing a project
 ake init [--dir DIR] [--dry-run] [--merge-agents] — initialize the current working directory by default; --dir is optional (run from the AKE repository)
 ake update [--dry-run] [--json] [--accept-customized]
